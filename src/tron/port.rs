@@ -25,7 +25,7 @@ pub trait Port {
 
 pub struct UsbPort {
     /// The Rockchip boot file whose loader goes into RAM.
-    pub loader: &'static [u8],
+    pub loader: Vec<u8>,
 }
 
 fn bus_path(info: &nusb::DeviceInfo) -> String {
@@ -76,10 +76,10 @@ impl Port for UsbPort {
             UsbMode::Loader => {}
             UsbMode::Maskrom => {
                 ensure!(
-                    format!("{:x}", Sha256::digest(self.loader)) == loader_sha256,
+                    format!("{:x}", Sha256::digest(&self.loader)) == loader_sha256,
                     "the loader is not the one the tables name"
                 );
-                usb::load_loader(self.info(found).await?, self.loader).await?;
+                usb::load_loader(self.info(found).await?, &self.loader).await?;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             UsbMode::Unknown => {
