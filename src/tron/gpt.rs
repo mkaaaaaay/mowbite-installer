@@ -3,7 +3,7 @@
 use crate::mower::Part;
 use anyhow::{Result, bail, ensure};
 
-pub const SECTOR: usize = 512;
+pub const SECTOR: usize = crate::disk::SECTOR as usize;
 /// Header sector plus 32 sectors of entries: the room every GPT tool reserves for 128 entries of 128 bytes.
 pub const PRIMARY_SECTORS: usize = 34;
 
