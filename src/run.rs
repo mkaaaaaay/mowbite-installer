@@ -99,8 +99,17 @@ impl Run {
         Ok(())
     }
 
-    /// The step after a restart of the program.
-    fn resumed(mut self) -> Self {
+    /// The step after a restart of the program. Another goal, or the same one after Done, starts again at Connect
+    /// with the backup kept; the owner chose the goal, so an unfinished write is not offered again.
+    fn resumed(mut self, goal: Goal) -> Self {
+        if self.goal != goal || self.step == Step::Done {
+            self.goal = goal;
+            self.step = Step::Connect;
+            self.findings.clear();
+            self.plan = None;
+            self.writing = false;
+            return self;
+        }
         self.step = match self.step {
             Step::Done | Step::Stopped | Step::FirstStart => self.step,
             _ if self.writing => Step::Write,
@@ -138,7 +147,7 @@ impl<'m, M: Mower> Driver<'m, M> {
     pub fn open(mower: &'m M, store_root: &Path, goal: Goal) -> Result<Self> {
         let run = match Run::load(store_root)? {
             Some(run) if run.mower != mower.id() => bail!("this backup belongs to a {}", run.mower),
-            Some(run) => run.resumed(),
+            Some(run) => run.resumed(goal),
             None => Run::new(mower.id(), goal),
         };
         let driver = Driver {
@@ -430,6 +439,53 @@ mod tests {
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
         assert!(w.until_asked(&mut d).await.is_err());
         assert_eq!(fake.ran("back"), 0);
+    }
+
+    #[tokio::test]
+    async fn back_and_install_again_after_a_finished_run() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        d.started().unwrap();
+        drop(d);
+        let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
+        assert_eq!((d.run.goal, d.run.step), (Goal::Back, Step::Connect));
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(fake.ran("back"), 1);
+        drop(d);
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!((fake.ran("backup"), fake.ran("write")), (1, 2));
+    }
+
+    #[tokio::test]
+    async fn back_after_a_stop_and_during_an_unfinished_write() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        *fake.fail_write.borrow_mut() = true;
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert!(w.until_asked(&mut d).await.is_err());
+        drop(d);
+        let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(fake.ran("back"), 1);
+
+        let mut w = World::new();
+        let fake = Fake::default();
+        *fake.findings.borrow_mut() = vec![Finding::Stop {
+            code: "tron.root_verified".into(),
+            details: String::new(),
+        }];
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert!(matches!(
+            w.until_asked(&mut d).await.unwrap(),
+            Next::Stopped(_)
+        ));
+        drop(d);
+        let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!((fake.ran("back"), fake.ran("write")), (1, 0));
     }
 
     #[test]
