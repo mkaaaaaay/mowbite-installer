@@ -83,10 +83,12 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
-/// Writes plan.image into the rootfs window and reads the same sectors back; Ok only when the sha256 matches the
-/// plan. Nothing outside first_sector..first_sector + partition_sectors can be written.
+/// Writes plan.sectors sectors from `src` into the rootfs window and reads them back; Ok only when both match
+/// plan.sha256. Nothing outside first_sector..first_sector + partition_sectors is written. The caller checks the
+/// source against plan.sha256 before (the prepared image, or the unpacked backup).
 pub async fn write_and_verify<D: Disk>(
     disk: D,
+    src: &mut dyn Read,
     plan: &WritePlan,
     cancel: &Cancel,
     progress: &dyn Progress,
@@ -97,11 +99,6 @@ pub async fn write_and_verify<D: Disk>(
         sectors: plan.partition_sectors,
     };
     let mut disk = Bounded::new(disk, window)?;
-    let mut src = File::open(&plan.image)?;
-    ensure!(
-        src.metadata()?.len() == plan.sectors * SECTOR,
-        "the image changed size since prepare"
-    );
     let total = plan.sectors * SECTOR * 2;
     let mut buf = vec![0u8; COPY];
     let mut at = 0u64;
@@ -121,8 +118,12 @@ pub async fn write_and_verify<D: Disk>(
         progress.bytes(at * SECTOR, total);
     }
     ensure!(
+        src.read(&mut buf[..1])? == 0,
+        "the source is longer than the plan"
+    );
+    ensure!(
         format!("{:x}", written.finalize()) == plan.sha256,
-        "the image changed since prepare"
+        "the source changed since it was checked"
     );
 
     progress.step("tron.read_back");
@@ -226,9 +227,15 @@ mod tests {
     #[tokio::test]
     async fn writes_inside_the_partition_and_reads_it_back() {
         let (_dir, disk, plan, flash) = setup(vec![]);
-        write_and_verify(disk, &plan, &Cancel::default(), &Quiet)
-            .await
-            .unwrap();
+        write_and_verify(
+            disk,
+            &mut File::open(&plan.image).unwrap(),
+            &plan,
+            &Cancel::default(),
+            &Quiet,
+        )
+        .await
+        .unwrap();
         let after = std::fs::read(flash).unwrap();
         assert!(
             after[..40 * 512]
@@ -245,23 +252,43 @@ mod tests {
     #[tokio::test]
     async fn a_bad_read_back_or_a_plan_past_the_partition_fails() {
         let (_dir, disk, plan, _) = setup(vec![Fault::Flip(45)]);
-        let Err(err) = write_and_verify(disk, &plan, &Cancel::default(), &Quiet).await else {
+        let Err(err) = write_and_verify(
+            disk,
+            &mut File::open(&plan.image).unwrap(),
+            &plan,
+            &Cancel::default(),
+            &Quiet,
+        )
+        .await
+        else {
             panic!("a flipped byte passed the read back");
         };
         assert!(err.to_string().contains("read back differs"), "{err}");
         let (_dir, disk, mut plan, _) = setup(vec![]);
         plan.sectors = 51;
         assert!(
-            write_and_verify(disk, &plan, &Cancel::default(), &Quiet)
-                .await
-                .is_err()
+            write_and_verify(
+                disk,
+                &mut File::open(&plan.image).unwrap(),
+                &plan,
+                &Cancel::default(),
+                &Quiet
+            )
+            .await
+            .is_err()
         );
         let (_dir, disk, mut plan, _) = setup(vec![]);
         plan.first_sector = 80;
         assert!(
-            write_and_verify(disk, &plan, &Cancel::default(), &Quiet)
-                .await
-                .is_err()
+            write_and_verify(
+                disk,
+                &mut File::open(&plan.image).unwrap(),
+                &plan,
+                &Cancel::default(),
+                &Quiet
+            )
+            .await
+            .is_err()
         );
     }
 }

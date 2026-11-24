@@ -1,8 +1,8 @@
 //! Back to the vendor system: prove that the backup belongs to this flash, then write the saved rootfs partition
 //! into the rootfs window. misc is left out of the proof because the loader writes it on restarts.
 
-use super::backup::{Area, areas, read_area};
-use crate::disk::{Disk, SECTOR};
+use super::backup::{Area, areas, file_name, open_raw, raw_sha256, read_area};
+use crate::disk::Disk;
 use crate::mower::{Backup, Cancel, Part, WritePlan};
 use crate::store::Store;
 use anyhow::{Context, Result, ensure};
@@ -15,7 +15,7 @@ pub fn fingerprint(files: &[(String, String)]) -> Result<Vec<(String, String)>> 
     FINGERPRINT
         .iter()
         .map(|name| {
-            let file = format!("{name}.img");
+            let file = file_name(name);
             files
                 .iter()
                 .find(|(f, _)| *f == file)
@@ -50,34 +50,34 @@ pub async fn belongs_here<D: Disk>(
     Ok(())
 }
 
-/// The plan that writes the saved rootfs back; the file is verified against SHA256SUMS first.
-pub fn plan(store: &Store, backup: &Backup) -> Result<WritePlan> {
+/// The plan that writes the saved rootfs back and its unpacked bytes; the file is checked against SHA256SUMS and
+/// its raw sha256 against the backup before anything is written.
+pub fn plan(store: &Store, backup: &Backup) -> Result<(WritePlan, impl std::io::Read + use<>)> {
     let part = backup
         .table
         .iter()
         .find(|p| p.name == "rootfs")
         .context("the backup has no rootfs partition")?;
-    let file = "rootfs.img";
-    store.verify(file)?;
+    let file = file_name("rootfs");
     let (_, sha256) = backup
         .files
         .iter()
-        .find(|(f, _)| f == file)
-        .context("rootfs.img is not in the backup")?;
-    let sectors = part.last_sector - part.first_sector + 1;
-    let image = store.path(file)?;
+        .find(|(f, _)| *f == file)
+        .with_context(|| format!("{file} is not in the backup"))?;
     ensure!(
-        std::fs::metadata(&image)?.len() == sectors * SECTOR,
-        "rootfs.img is not the size of the partition"
+        raw_sha256(store, &file)? == *sha256,
+        "{file} does not unpack to the rootfs that was saved"
     );
-    Ok(WritePlan {
+    let sectors = part.last_sector - part.first_sector + 1;
+    let plan = WritePlan {
         partition: part.name.clone(),
         first_sector: part.first_sector,
         sectors,
         partition_sectors: sectors,
-        image,
+        image: store.path(&file)?,
         sha256: sha256.clone(),
-    })
+    };
+    Ok((plan, open_raw(store, &file)?))
 }
 
 #[cfg(test)]
@@ -137,8 +137,8 @@ mod tests {
 
         let mut disk = FileDisk::open(&flash, vec![]).unwrap();
         belongs_here(&mut disk, &table(), &b).await.unwrap();
-        let plan = plan(&store, &b).unwrap();
-        write_and_verify(disk, &plan, &Cancel::default(), &Quiet)
+        let (plan, mut src) = plan(&store, &b).unwrap();
+        write_and_verify(disk, &mut src, &plan, &Cancel::default(), &Quiet)
             .await
             .unwrap();
         let after = std::fs::read(&flash).unwrap();
@@ -164,12 +164,13 @@ mod tests {
         t[4].last_sector = 198;
         assert!(belongs_here(&mut disk, &t, &b).await.is_err());
 
-        std::fs::write(store.path("rootfs.img").unwrap(), vec![0u8; 120 * 512]).unwrap();
+        std::fs::write(store.path("rootfs.img.zst").unwrap(), vec![0u8; 120 * 512]).unwrap();
+        let Err(err) = plan(&store, &b) else {
+            panic!("a changed backup file passed");
+        };
         assert!(
-            plan(&store, &b)
-                .unwrap_err()
-                .to_string()
-                .contains("changed since the backup")
+            err.to_string().contains("changed since the backup"),
+            "{err}"
         );
     }
 }

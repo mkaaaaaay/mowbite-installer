@@ -1,11 +1,13 @@
-//! The backup of the whole flash, area by area: everything once into the store, the start areas and the rootfs a
-//! second time and compared by sha256, so a reading fault cannot slip into the backup unnoticed.
+//! The backup of the whole flash, area by area: everything once into the store (zstd, the sha256 is over the raw
+//! bytes), the start areas and the rootfs a second time and compared, so a reading fault cannot slip in unnoticed.
 
 use crate::disk::{Disk, SECTOR};
 use crate::mower::{Cancel, Part, Progress};
-use crate::store::Store;
+use crate::store::{NewFile, Store};
 use anyhow::{Result, bail, ensure};
 use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::{Read, Write};
 
 /// Sectors per read call (8 MiB).
 pub const READ_SECTORS: u64 = 16384;
@@ -22,8 +24,13 @@ pub struct Area {
 
 impl Area {
     pub fn file(&self) -> String {
-        format!("{}.img", self.name)
+        file_name(&self.name)
     }
+}
+
+/// The store file of an area.
+pub fn file_name(area: &str) -> String {
+    format!("{area}.img.zst")
 }
 
 /// The whole flash as areas in order: before the first partition, the partitions, gaps between them, after the last.
@@ -101,6 +108,30 @@ pub async fn read_area<D: Disk>(
     Ok(format!("{:x}", hash.finalize()))
 }
 
+struct ToFile<'a>(&'a mut NewFile);
+
+impl Write for ToFile<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf).map_err(std::io::Error::other)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The raw bytes of a saved area, after its file passed the check against SHA256SUMS.
+pub fn open_raw(store: &Store, name: &str) -> Result<impl Read + use<>> {
+    store.verify(name)?;
+    Ok(zstd::Decoder::new(File::open(store.path(name)?)?)?)
+}
+
+pub fn raw_sha256(store: &Store, name: &str) -> Result<String> {
+    let mut hash = Sha256::new();
+    std::io::copy(&mut open_raw(store, name)?, &mut hash)?;
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 /// Saves every area that is not in the store yet and returns (file, sha256) of all of them. Finished files are kept
 /// as they are, so a run can go on after an abort; a second read that differs ends the backup with an error.
 pub async fn backup<D: Disk>(
@@ -123,18 +154,24 @@ pub async fn backup<D: Disk>(
             done_bytes += n;
             progress.bytes(done_bytes, total);
         };
-        let sum = match store.recorded(&name)? {
-            Some(sum) => {
-                done(area.sectors * SECTOR);
-                sum
-            }
-            None => {
-                let mut file = store.create_new(&name)?;
-                let sum = read_area(disk, area, cancel, &mut done, &mut |b| file.write(b)).await?;
-                let recorded = file.finish()?;
-                ensure!(recorded == sum, "{name}: file and read differ");
-                sum
-            }
+        let sum = if store.recorded(&name)?.is_some() {
+            done(area.sectors * SECTOR);
+            raw_sha256(store, &name)?
+        } else {
+            store.discard_unfinished(&name)?;
+            let mut file = store.create_new(&name)?;
+            let mut packed = zstd::Encoder::new(ToFile(&mut file), 3)?;
+            let sum = read_area(disk, area, cancel, &mut done, &mut |b| {
+                Ok(packed.write_all(b)?)
+            })
+            .await?;
+            packed.finish()?;
+            file.finish()?;
+            ensure!(
+                raw_sha256(store, &name)? == sum,
+                "{name}: the saved file does not unpack to what was read"
+            );
+            sum
         };
         if area.twice {
             let again = read_area(disk, area, cancel, &mut done, &mut |_| Ok(())).await?;
@@ -233,8 +270,14 @@ mod tests {
             .unwrap();
         assert_eq!(files.len(), 8);
         let raw = std::fs::read(f.path()).unwrap();
-        let rootfs = std::fs::read(store.path("rootfs.img").unwrap()).unwrap();
+        let mut rootfs = Vec::new();
+        open_raw(&store, "rootfs.img.zst")
+            .unwrap()
+            .read_to_end(&mut rootfs)
+            .unwrap();
         assert_eq!(rootfs, &raw[128 * 512..300 * 512]);
+        let (_, sum) = files.iter().find(|(f, _)| f == "rootfs.img.zst").unwrap();
+        assert_eq!(*sum, format!("{:x}", Sha256::digest(&rootfs)));
         for (name, _) in &files {
             store.verify(name).unwrap();
         }
@@ -260,17 +303,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        let before = std::fs::metadata(store.path("uboot.img").unwrap())
+        let before = std::fs::metadata(store.path("uboot.img.zst").unwrap())
             .unwrap()
             .modified()
             .unwrap();
-        // The unfinished gap file stays in the way until the frame removes it.
-        std::fs::remove_file(store.path("gap-32.img").unwrap()).unwrap();
+        assert!(store.path("gap-32.img.zst").unwrap().exists());
         let mut disk = FileDisk::open(f.path(), vec![]).unwrap();
         backup(&mut disk, &table(), &mut store, &Cancel::default(), &p)
             .await
             .unwrap();
-        let after = std::fs::metadata(store.path("uboot.img").unwrap())
+        let after = std::fs::metadata(store.path("uboot.img.zst").unwrap())
             .unwrap()
             .modified()
             .unwrap();
