@@ -5,3 +5,4 @@ pub mod fit;
 pub mod gpt;
 pub mod pack;
 pub mod rootfs;
+pub mod usb;
