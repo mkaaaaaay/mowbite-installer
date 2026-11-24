@@ -77,6 +77,11 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "An optional part of the vendor system cannot be read reliably; setup goes on without it.",
     ),
     (
+        "tron.vendor_unknown",
+        "Diesen Softwarestand des Herstellers kennt der Installer nicht. Er kann trotzdem weitermachen.",
+        "The installer does not know this vendor software version. It can go on anyway.",
+    ),
+    (
         "tron.write",
         "MowBite OS wird auf die Tron geschrieben.",
         "Writing MowBite OS to the Tron.",
@@ -98,6 +103,7 @@ mod tests {
         include_str!("checks.rs"),
         include_str!("fit.rs"),
         include_str!("gpt.rs"),
+        include_str!("identity.rs"),
         include_str!("image.rs"),
         include_str!("pack.rs"),
         include_str!("rootfs.rs"),

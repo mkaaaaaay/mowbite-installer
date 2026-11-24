@@ -3,6 +3,7 @@
 
 use super::fit::{self, Boot};
 use super::gpt::{self, Entry};
+use super::identity;
 use super::rootfs::{self, Kind};
 use crate::mower::{Finding, Part};
 use std::path::Path;
@@ -15,6 +16,8 @@ pub struct Known {
     pub required: Vec<String>,
     /// Vendor parts taken along when present.
     pub optional: Vec<String>,
+    /// Vendor versions (folder names under /userdata/RobotData/upgrade) the parts were checked on.
+    pub vendor_versions: Vec<String>,
 }
 
 #[derive(Default)]
@@ -27,6 +30,12 @@ pub struct Checked {
 impl Checked {
     fn stop(&mut self, code: &str, details: impl Into<String>) {
         self.findings.push(Finding::Stop {
+            code: code.into(),
+            details: details.into(),
+        });
+    }
+    fn warn(&mut self, code: &str, details: impl Into<String>) {
+        self.findings.push(Finding::Warn {
             code: code.into(),
             details: details.into(),
         });
@@ -118,6 +127,10 @@ fn check_rootfs(c: &mut Checked, image: &Path, release: &str, known: &Known) {
         Ok(fs) => fs,
         Err(e) => return c.stop("tron.rootfs_unreadable", format!("{e:#}")),
     };
+    match identity::vendor_version(&fs) {
+        Some(v) if known.vendor_versions.contains(&v) => {}
+        other => c.warn("tron.vendor_unknown", other.unwrap_or_default()),
+    }
     match rootfs::module_dirs(&fs) {
         Ok(dirs) => {
             if !dirs.iter().any(|d| d == release) {
@@ -210,6 +223,7 @@ mod tests {
             ]],
             required: vec!["/usr/lib/modules/5.10.209".into(), "/etc/iqfiles".into()],
             optional: vec!["/usr/lib/kernel/driver".into()],
+            vendor_versions: vec!["v1.1.1".into()],
         }
     }
 
@@ -250,6 +264,23 @@ mod tests {
         );
         assert!(!c.stopped());
         assert_eq!(c.boot.unwrap().kernel_release, "5.10.209");
+    }
+
+    #[test]
+    fn an_unknown_vendor_version_only_warns() {
+        let mut k = known();
+        k.vendor_versions = vec!["v1.3.32-tron.rc.8".into()];
+        let c = run(
+            &table(),
+            &boot_partition(KERNEL, BOOTARGS, false),
+            GOOD_VERMAGIC,
+            &k,
+        );
+        assert!(!c.stopped(), "{:?}", c.findings);
+        assert!(c.findings.contains(&Finding::Warn {
+            code: "tron.vendor_unknown".into(),
+            details: "v1.1.1".into()
+        }));
     }
 
     #[test]

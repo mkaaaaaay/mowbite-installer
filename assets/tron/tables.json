@@ -23,5 +23,6 @@
     "/usr/lib/aarch64-linux-gnu/librga.so",
     "/usr/lib/aarch64-linux-gnu/librga.so.2",
     "/usr/lib/aarch64-linux-gnu/librga.so.2.1.0"
-  ]
+  ],
+  "vendor_versions": ["v1.1.1", "v1.3.32-tron.rc.8"]
 }

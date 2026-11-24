@@ -159,21 +159,23 @@ pub(crate) mod tests {
 
     /// A small ext4 made by mke2fs from a folder (e2fsprogs, often only in /usr/sbin).
     pub fn ext4_from(dir: &Path, image: &Path) {
+        mke2fs(dir, image, &[]);
+    }
+
+    /// Like the vendor partition "userdata": 128-byte inodes with metadata checksums.
+    pub fn ext4_small_inodes(dir: &Path, image: &Path) {
+        mke2fs(dir, image, &["-I", "128", "-O", "metadata_csum"]);
+    }
+
+    fn mke2fs(dir: &Path, image: &Path, extra: &[&str]) {
         let tool = ["/usr/sbin/mke2fs", "/sbin/mke2fs"]
             .into_iter()
             .find(|p| Path::new(p).exists())
             .unwrap_or("mke2fs");
         let ok = Command::new(tool)
-            .args([
-                "-q",
-                "-t",
-                "ext4",
-                "-b",
-                "1024",
-                "-E",
-                "root_owner=0:0",
-                "-d",
-            ])
+            .args(["-q", "-t", "ext4", "-b", "1024", "-E", "root_owner=0:0"])
+            .args(extra)
+            .arg("-d")
             .arg(dir)
             .arg(image)
             .arg("4M")
@@ -223,6 +225,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(lib.join("librga.so.2.1.0"), "lib").unwrap();
         symlink("librga.so.2.1.0", lib.join("librga.so.2")).unwrap();
+        symlink("/userdata/RobotData/upgrade/v1.1.1", root.join("workspace")).unwrap();
         let iq = root.join("etc/iqfiles");
         std::fs::create_dir_all(&iq).unwrap();
         std::fs::write(iq.join("a.json"), "{}").unwrap();

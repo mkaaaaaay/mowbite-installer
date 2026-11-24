@@ -5,6 +5,7 @@ pub mod backup;
 pub mod checks;
 pub mod fit;
 pub mod gpt;
+pub mod identity;
 pub mod image;
 pub mod pack;
 pub mod rootfs;

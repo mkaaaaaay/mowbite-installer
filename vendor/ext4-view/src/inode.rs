@@ -5,6 +5,8 @@
 // <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//
+// Changed for mowbite-installer: 128-byte inodes with metadata checksums.
 
 use crate::Ext4;
 use crate::block_index::FsBlockIndex;
@@ -143,18 +145,6 @@ impl Inode {
             .into());
         }
 
-        // If metadata checksums are enabled, the inode must be big
-        // enough to include the checksum fields.
-        if ext4.has_metadata_checksums()
-            && data.len() < (Self::I_CHECKSUM_HI_OFFSET + 2)
-        {
-            return Err(CorruptKind::InodeTruncated {
-                inode: index,
-                size: data.len(),
-            }
-            .into());
-        }
-
         let i_mode = read_u16le(data, 0x0);
         let i_uid = read_u16le(data, 0x2);
         let i_size_lo = read_u32le(data, 0x4);
@@ -171,10 +161,13 @@ impl Inode {
         let l_i_gid_high = read_u16le(data, 0x74 + 0x6);
         let (l_i_checksum_lo, i_checksum_hi) = if ext4.has_metadata_checksums()
         {
-            (
-                read_u16le(data, Self::L_I_CHECKSUM_LO_OFFSET),
-                read_u16le(data, Self::I_CHECKSUM_HI_OFFSET),
-            )
+            // A 128-byte inode has only the low half of the checksum.
+            let hi = if data.len() >= Self::I_CHECKSUM_HI_OFFSET + 2 {
+                read_u16le(data, Self::I_CHECKSUM_HI_OFFSET)
+            } else {
+                0
+            };
+            (read_u16le(data, Self::L_I_CHECKSUM_LO_OFFSET), hi)
         } else {
             // If metadata checksums aren't enabled then these values
             // aren't used; arbitrarily set to zero.
@@ -280,19 +273,26 @@ impl Inode {
             // Zero'd field.
             checksum.update_u16_le(0);
 
-            // Up to the i_checksum_hi field.
-            checksum.update(
-                &data[Self::L_I_CHECKSUM_LO_OFFSET + 2
-                    ..Self::I_CHECKSUM_HI_OFFSET],
-            );
+            let actual_checksum = if data.len()
+                >= Self::I_CHECKSUM_HI_OFFSET + 2
+            {
+                // Up to the i_checksum_hi field.
+                checksum.update(
+                    &data[Self::L_I_CHECKSUM_LO_OFFSET + 2
+                        ..Self::I_CHECKSUM_HI_OFFSET],
+                );
 
-            // Zero'd field.
-            checksum.update_u16_le(0);
+                // Zero'd field.
+                checksum.update_u16_le(0);
 
-            // Rest of the inode.
-            checksum.update(&data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
-
-            let actual_checksum = checksum.finalize();
+                // Rest of the inode.
+                checksum.update(&data[Self::I_CHECKSUM_HI_OFFSET + 2..]);
+                checksum.finalize()
+            } else {
+                // A 128-byte inode stores the low 16 bits only.
+                checksum.update(&data[Self::L_I_CHECKSUM_LO_OFFSET + 2..]);
+                checksum.finalize() & 0xffff
+            };
             if actual_checksum != expected_checksum {
                 return Err(CorruptKind::InodeChecksum(inode.index).into());
             }
