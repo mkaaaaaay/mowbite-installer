@@ -12,14 +12,19 @@ use std::path::Path;
 
 const COPY: usize = 8 << 20;
 
-/// Copies the base image to `out` while checking its sha256, then writes the pack over the reserved file, which must
-/// still hold the empty mark. Returns the sha256 of the result.
+/// Bytes the base image reserves for the pack, over all its pieces.
+pub fn room(base: &BaseImage) -> u64 {
+    base.pack.iter().map(|&(_, len)| len).sum()
+}
+
+/// Copies the base image to `out` while checking its sha256, then writes the pack over the reserved file, piece by
+/// piece in file order; the first piece must still start with the empty mark. Returns the sha256 of the result.
 pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<String> {
     ensure!(
-        filled_pack.len() as u64 == base.pack_len,
+        filled_pack.len() as u64 == room(base),
         "pack is {} bytes, the base reserves {}",
         filled_pack.len(),
-        base.pack_len
+        room(base)
     );
     let mut src =
         File::open(&base.path).with_context(|| format!("open {}", base.path.display()))?;
@@ -48,22 +53,30 @@ pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<Str
         "the base image is no whole number of sectors"
     );
     ensure!(
-        base.pack_offset
-            .checked_add(base.pack_len)
-            .is_some_and(|end| end <= len),
-        "the pack place lies outside the base image"
+        base.pack
+            .iter()
+            .all(|&(at, n)| at.checked_add(n).is_some_and(|end| end <= len)),
+        "a pack piece lies outside the base image"
     );
-
+    let &(first_at, _) = base
+        .pack
+        .first()
+        .context("the base image reserves no pack")?;
     let mut first = vec![0u8; pack::BLOCK];
     let mut probe = File::open(out)?;
-    probe.seek(SeekFrom::Start(base.pack_offset))?;
+    probe.seek(SeekFrom::Start(first_at))?;
     probe.read_exact(&mut first)?;
     ensure!(
         pack::is_empty_mark(&first),
         "the pack place of the base image does not hold the empty mark"
     );
-    dst.seek(SeekFrom::Start(base.pack_offset))?;
-    dst.write_all(filled_pack)?;
+    let mut rest = filled_pack;
+    for &(at, n) in &base.pack {
+        let (piece, tail) = rest.split_at(n as usize);
+        dst.seek(SeekFrom::Start(at))?;
+        dst.write_all(piece)?;
+        rest = tail;
+    }
     dst.sync_all()?;
     drop(dst);
     sha256_file(out)
@@ -165,8 +178,7 @@ mod tests {
         BaseImage {
             sha256: format!("{:x}", Sha256::digest(&img)),
             path,
-            pack_offset: 8192,
-            pack_len: 4096,
+            pack: vec![(8192, 2048), (20480, 2048)],
         }
     }
 
@@ -175,12 +187,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let b = base(dir.path(), pack::EMPTY);
         let out = dir.path().join("rootfs.img");
-        let filled = vec![0xabu8; 4096];
+        let mut filled = vec![0xabu8; 2048];
+        filled.extend_from_slice(&[0xcd; 2048]);
         let sum = fill_base(&b, &filled, &out).unwrap();
         let img = std::fs::read(&out).unwrap();
         assert_eq!(sum, format!("{:x}", Sha256::digest(&img)));
-        assert!(img[..8192].iter().chain(&img[12288..]).all(|&x| x == 0x55));
-        assert!(img[8192..12288].iter().all(|&x| x == 0xab));
+        assert!(img[..8192].iter().chain(&img[22528..]).all(|&x| x == 0x55));
+        assert!(img[8192..10240].iter().all(|&x| x == 0xab));
+        assert!(img[10240..12288].iter().all(|&x| x == 0));
+        assert!(img[12288..20480].iter().all(|&x| x == 0x55));
+        assert!(img[20480..22528].iter().all(|&x| x == 0xcd));
     }
 
     #[test]

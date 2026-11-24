@@ -175,7 +175,7 @@ impl<P: Port> Mower for Tron<P> {
             .as_secs();
         let archive = contents::build(&vendor, &known, inputs, mtime)?;
         drop(vendor);
-        let filled = pack::pack(archive, base.pack_len)?;
+        let filled = pack::pack(archive, image::room(base))?;
         let out = ctx.work.path.join("mowbite-rootfs.img");
         if out.exists() {
             std::fs::remove_file(&out)?;
@@ -331,8 +331,7 @@ mod tests {
         BaseImage {
             path,
             sha256: format!("{:x}", Sha256::digest(&img)),
-            pack_offset: 1 << 19,
-            pack_len: 1 << 20,
+            pack: vec![(1 << 19, 1 << 19), (3 << 19, 1 << 19)],
         }
     }
 
