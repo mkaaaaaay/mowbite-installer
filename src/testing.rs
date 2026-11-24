@@ -192,3 +192,46 @@ impl World {
         }
     }
 }
+
+#[cfg(unix)]
+// A key of its own and a signature of data, made by ssh-keygen; None where ssh-keygen is missing.
+pub fn signed(
+    dir: &std::path::Path,
+    name: &str,
+    data: &[u8],
+    namespace: &str,
+) -> Option<(String, String)> {
+    let key = dir.join(name);
+    if !key.exists() {
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "", "-f"])
+            .arg(&key)
+            .status()
+            .ok()?;
+        assert!(made.success());
+    }
+    let file = dir.join(format!("{name}-{namespace}.data"));
+    std::fs::write(&file, data).unwrap();
+    let _ = std::fs::remove_file(file.with_extension("data.sig"));
+    let done = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-Y", "sign", "-n", namespace, "-f"])
+        .arg(&key)
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+    let sig = std::fs::read_to_string(file.with_extension("data.sig")).unwrap();
+    Some((
+        public
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" "),
+        sig,
+    ))
+}
