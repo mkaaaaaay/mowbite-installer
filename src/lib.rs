@@ -3,6 +3,7 @@
 pub mod awake;
 pub mod disk;
 pub mod mower;
+pub mod net;
 pub mod run;
 pub mod secret;
 pub mod sign;

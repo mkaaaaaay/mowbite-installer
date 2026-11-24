@@ -98,7 +98,7 @@ pub struct Backup {
     pub table: Vec<Part>,
     /// Store file name and sha256 of each saved area.
     pub files: Vec<(String, String)>,
-    /// sha256 of areas that never change between installs (on the Tron uboot, boot and p8).
+    /// sha256 of areas that never change between installs (on the Tron flash-start, uboot, boot and recovery).
     pub fingerprint: Vec<(String, String)>,
 }
 
