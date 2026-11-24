@@ -29,3 +29,6 @@ tokio = { version = "1", features = ["rt", "macros", "time", "test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Power"] }
+
+[patch.crates-io]
+ext4-view = { path = "vendor/ext4-view" }

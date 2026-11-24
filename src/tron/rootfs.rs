@@ -2,7 +2,7 @@
 //! rootfs saved from a running system reads like after a clean shutdown; the backup file stays untouched.
 
 use anyhow::{Context, Result, anyhow, bail};
-use ext4_view::{Ext4, Ext4Read, FileType};
+use ext4_view::{Ext4, Ext4Error, Ext4Read, FileType};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::path::Path;
@@ -136,6 +136,17 @@ pub fn vermagic(module: &[u8]) -> Option<String> {
     String::from_utf8(module[at..at + end].to_vec()).ok()
 }
 
+/// True when `e` comes from a file with an unwritten extent (after fallocate), which reads as zeros on Linux but
+/// would come back here with stale block contents.
+pub fn is_unwritten(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<Ext4Error>(),
+            Some(Ext4Error::UnwrittenExtent)
+        )
+    })
+}
+
 pub fn read(fs: &Ext4, path: &str) -> Result<Vec<u8>> {
     fs.read(path).with_context(|| format!("read {path}"))
 }
@@ -170,6 +181,25 @@ pub(crate) mod tests {
             .expect("these tests need mke2fs from e2fsprogs")
             .success();
         assert!(ok, "mke2fs failed");
+    }
+
+    /// Gives `path` in `image` unwritten blocks after its data, as fallocate does, and grows its size over them.
+    pub fn fallocate(image: &Path, path: &str, blocks: u32) {
+        let tool = ["/usr/sbin/debugfs", "/sbin/debugfs"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+            .unwrap_or("debugfs");
+        for req in [
+            format!("fallocate {path} 1 {blocks}"),
+            format!("sif {path} size {}", (blocks + 1) * 1024),
+        ] {
+            let out = Command::new(tool)
+                .args(["-w", "-R", &req])
+                .arg(image)
+                .output()
+                .expect("these tests need debugfs from e2fsprogs");
+            assert!(out.status.success(), "debugfs {req} failed");
+        }
     }
 
     /// A tree like the vendor parts: a module folder for the running and for an older kernel, a link, odd modes.
@@ -237,6 +267,22 @@ pub(crate) mod tests {
         let ko = read(&fs, "/usr/lib/modules/5.10.209/bcmdhd.ko").unwrap();
         assert_eq!(vermagic(&ko).as_deref(), Some(GOOD_VERMAGIC));
         assert!(collect(&fs, "/usr/lib/kernel/driver").is_err());
+    }
+
+    #[test]
+    fn unwritten_extent_is_an_error_not_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        vendor_tree(&tree, GOOD_VERMAGIC);
+        let img = dir.path().join("rootfs.img");
+        ext4_from(&tree, &img);
+        fallocate(&img, "/etc/iqfiles/a.json", 7);
+        let fs = open(&img, 0).unwrap();
+        let e = collect(&fs, "/etc/iqfiles").unwrap_err();
+        assert!(is_unwritten(&e), "{e:#}");
+        assert!(collect(&fs, "/usr/lib/modules").is_ok());
+        let e = read(&fs, "/usr/lib/modules/5.10.209/nothing").unwrap_err();
+        assert!(!is_unwritten(&e));
     }
 
     #[test]

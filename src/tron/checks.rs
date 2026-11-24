@@ -144,6 +144,14 @@ fn check_rootfs(c: &mut Checked, image: &Path, release: &str, known: &Known) {
     {
         let entries = match rootfs::collect(&fs, part) {
             Ok(e) => e,
+            Err(e) if rootfs::is_unwritten(&e) => {
+                if required {
+                    c.stop("tron.part_unwritten", format!("{e:#}"));
+                } else {
+                    c.info("tron.optional_unwritten", format!("{e:#}"));
+                }
+                continue;
+            }
             Err(e) if required => {
                 c.stop("tron.part_missing", format!("{e:#}"));
                 continue;
@@ -175,7 +183,7 @@ mod tests {
     use super::*;
     use crate::tron::fit::tests::{KERNEL, boot_partition};
     use crate::tron::gpt::tests::{ROOTFS_UUID, image};
-    use crate::tron::rootfs::tests::{GOOD_VERMAGIC, ext4_from, vendor_tree};
+    use crate::tron::rootfs::tests::{GOOD_VERMAGIC, ext4_from, fallocate, vendor_tree};
 
     const BOOTARGS: &str = "console=ttyFIQ0 root=PARTUUID=614e0000-0000 rw rootwait";
 
@@ -242,6 +250,29 @@ mod tests {
         );
         assert!(!c.stopped());
         assert_eq!(c.boot.unwrap().kernel_release, "5.10.209");
+    }
+
+    #[test]
+    fn unwritten_blocks_in_a_part_stop_only_when_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        vendor_tree(&tree, GOOD_VERMAGIC);
+        let img = dir.path().join("rootfs.img");
+        ext4_from(&tree, &img);
+        fallocate(&img, "/etc/iqfiles/a.json", 7);
+        let boot = boot_partition(KERNEL, BOOTARGS, false);
+        let c = check(&table(), &boot, &img, &known());
+        assert!(
+            codes(&c).contains(&"stop tron.part_unwritten".to_string()),
+            "{:?}",
+            c.findings
+        );
+        let mut k = known();
+        k.required.retain(|p| p != "/etc/iqfiles");
+        k.optional.push("/etc/iqfiles".into());
+        let c = check(&table(), &boot, &img, &k);
+        assert!(!c.stopped(), "{:?}", c.findings);
+        assert!(codes(&c).contains(&"info tron.optional_unwritten".to_string()));
     }
 
     #[test]
