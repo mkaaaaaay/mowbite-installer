@@ -104,8 +104,8 @@ impl Archive {
 
     /// A vendor part with everything below it, owned by root and without write access for group and others, as
     /// the image of our own Tron has them.
-    pub fn vendor_part(&mut self, fs: &Ext4, part: &str) -> Result<()> {
-        for e in rootfs::collect(fs, part)? {
+    pub fn vendor_part(&mut self, fs: &Ext4, entries: &[rootfs::Entry]) -> Result<()> {
+        for e in entries {
             let path = e.path.trim_start_matches('/');
             let mode = e.mode & !0o022;
             match &e.kind {
@@ -221,9 +221,13 @@ mod tests {
         ext4_from(&tree, &img);
         let fs = rootfs::open(&img, 0).unwrap();
         let mut a = Archive::new(0);
-        a.vendor_part(&fs, "/etc/iqfiles").unwrap();
-        a.vendor_part(&fs, "/usr/lib/aarch64-linux-gnu/librga.so.2")
+        a.vendor_part(&fs, &rootfs::collect(&fs, "/etc/iqfiles").unwrap())
             .unwrap();
+        a.vendor_part(
+            &fs,
+            &rootfs::collect(&fs, "/usr/lib/aarch64-linux-gnu/librga.so.2").unwrap(),
+        )
+        .unwrap();
         let list = tar_list(&a.finish());
         assert!(
             list.lines().next().unwrap().starts_with("drwxr-xr-x 0/0"),

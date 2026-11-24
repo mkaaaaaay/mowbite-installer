@@ -115,7 +115,7 @@ pub enum Finding {
 pub struct WritePlan {
     pub partition: String,
     pub first_sector: u64,
-    /// Never more than partition_sectors; a smaller image grows on the first start.
+    /// Exactly partition_sectors until a smaller image that grows on the first start is decided (N3).
     pub sectors: u64,
     /// From the partition table read from the device.
     pub partition_sectors: u64,
@@ -126,7 +126,18 @@ pub struct WritePlan {
 
 impl WritePlan {
     pub fn fits(&self) -> bool {
-        self.sectors > 0 && self.sectors <= self.partition_sectors
+        self.sectors > 0 && self.sectors == self.partition_sectors
+    }
+}
+
+/// Context of the error of write() or back() when the image was written and read back and only the restart
+/// failed: the system is complete, the owner switches the mower off and on instead of writing again.
+#[derive(Debug)]
+pub struct WrittenNotRestarted;
+
+impl std::fmt::Display for WrittenNotRestarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("written and read back, but the restart failed")
     }
 }
 
@@ -219,9 +230,9 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_never_reaches_past_its_partition() {
+    fn a_plan_fills_its_partition_exactly() {
         assert!(plan(100, 100).fits());
-        assert!(plan(50, 100).fits());
+        assert!(!plan(50, 100).fits());
         assert!(!plan(101, 100).fits());
         assert!(!plan(0, 100).fits());
     }

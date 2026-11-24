@@ -99,7 +99,7 @@ impl Mower for Fake {
         Ok(WritePlan {
             partition: "rootfs".into(),
             first_sector: 100,
-            sectors: 50,
+            sectors: 100,
             partition_sectors: 100,
             image: PathBuf::new(),
             sha256: String::new(),

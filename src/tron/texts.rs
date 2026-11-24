@@ -2,6 +2,45 @@
 
 pub const TEXTS: &[(&str, &str, &str)] = &[
     (
+        "tron.usb_not_supported",
+        "Diese Version des Installers kann eine Tron noch nicht über USB öffnen. Eine spätere Version kann es.",
+        "This version of the installer cannot open a Tron over USB yet. A later version will.",
+    ),
+    (
+        "tron.compare_device",
+        "Die Sicherung stammt aus einem früheren Lauf. Der Installer vergleicht sie mit der Tron.",
+        "The backup comes from an earlier run. The installer compares it with the Tron.",
+    ),
+    (
+        "tron.device_changed",
+        "Die Tron hat sich seit dieser Sicherung verändert (gestartet oder aktualisiert). Bitte mit einem neuen, \
+         leeren Sicherungsordner neu beginnen. Die alte Sicherung nicht löschen, bis die neue fertig ist.",
+        "The Tron changed since this backup (it started or was updated). Please start again with a new, empty \
+         backup folder. Keep the old backup until the new one is done.",
+    ),
+    (
+        "tron.no_vendor_system",
+        "Auf der Tron läuft nicht das System des Herstellers. Der Installer sichert nur einen Werksstand; \
+         für eine Tron mit MowBite OS den Ordner der ersten Sicherung nehmen.",
+        "The Tron does not run the vendor system. The installer only backs up a factory state; for a Tron with \
+         MowBite OS use the folder of the first backup.",
+    ),
+    (
+        "tron.part_link",
+        "Ein benötigter Teil des Herstellers enthält einen Verweis nach außerhalb. So kann er nicht übernommen werden.",
+        "A required vendor part holds a link to outside. It cannot be taken over like this.",
+    ),
+    (
+        "tron.optional_left_out",
+        "Ein zusätzlicher Teil des Herstellers enthält einen Verweis nach außerhalb und bleibt weg.",
+        "An extra vendor part holds a link to outside and is left out.",
+    ),
+    (
+        "tron.work_image_kept",
+        "Das Arbeitsabbild mit den WLAN-Schlüsseln ließ sich nicht löschen. Bitte den Arbeitsordner von Hand leeren.",
+        "The work image with the Wi-Fi keys could not be removed. Please empty the work folder by hand.",
+    ),
+    (
         "tron.guide_battery",
         "Der Akku bleibt in der Tron. Die Tron steht nicht auf der Ladestation und ist ausgeschaltet.",
         "The battery stays in the Tron. The Tron is off and not on its charging station.",

@@ -33,6 +33,8 @@ fn bus_path(info: &nusb::DeviceInfo) -> String {
     format!("{}-{}", info.bus_id(), chain.join("."))
 }
 
+const NOT_SUPPORTED: &str = "tron.usb_not_supported";
+
 /// Maskrom and loader look the same until the USB descriptors of both are measured on a Tron.
 fn mode(_info: &nusb::DeviceInfo) -> UsbMode {
     UsbMode::Unknown
@@ -83,7 +85,9 @@ impl Port for UsbPort {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             UsbMode::Unknown => {
-                bail!("the USB mode of the Tron is not known, it cannot be opened safely")
+                bail!(
+                    "{NOT_SUPPORTED}: opening a Tron over USB is not supported yet, its USB modes are not measured"
+                )
             }
         }
         TronUsb::open(self.info(found).await?).await

@@ -20,6 +20,17 @@ pub struct Known {
     pub vendor_versions: Vec<String>,
 }
 
+impl Known {
+    /// Required and optional parts together.
+    pub fn parts(&self) -> Vec<String> {
+        self.required
+            .iter()
+            .chain(&self.optional)
+            .cloned()
+            .collect()
+    }
+}
+
 #[derive(Default)]
 pub struct Checked {
     pub table: Vec<Entry>,
@@ -127,6 +138,9 @@ fn check_rootfs(c: &mut Checked, image: &Path, release: &str, known: &Known) {
         Ok(fs) => fs,
         Err(e) => return c.stop("tron.rootfs_unreadable", format!("{e:#}")),
     };
+    if fs.symlink_metadata("/workspace").is_err() {
+        return c.stop("tron.no_vendor_system", "no /workspace");
+    }
     match identity::vendor_version(&fs) {
         Some(v) if known.vendor_versions.contains(&v) => {}
         other => c.warn("tron.vendor_unknown", other.unwrap_or_default()),
@@ -149,14 +163,23 @@ fn check_rootfs(c: &mut Checked, image: &Path, release: &str, known: &Known) {
         Err(e) => c.stop("tron.modules_missing", format!("{e:#}")),
     }
     let want = format!("{release} ");
+    let parts = known.parts();
     for (part, required) in known
         .required
         .iter()
         .map(|p| (p, true))
         .chain(known.optional.iter().map(|p| (p, false)))
     {
-        let entries = match rootfs::collect(&fs, part) {
+        let entries = match rootfs::take(&fs, part, &parts) {
             Ok(e) => e,
+            Err(e) if rootfs::is_outside_link(&e) => {
+                if required {
+                    c.stop("tron.part_link", format!("{e:#}"));
+                } else {
+                    c.info("tron.optional_left_out", format!("{e:#}"));
+                }
+                continue;
+            }
             Err(e) if rootfs::is_unwritten(&e) => {
                 if required {
                     c.stop("tron.part_unwritten", format!("{e:#}"));
@@ -401,5 +424,49 @@ mod tests {
             "{:?}",
             c.findings
         );
+    }
+
+    fn run_tree(tree_fix: impl FnOnce(&Path), known: &Known) -> Checked {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        vendor_tree(&tree, GOOD_VERMAGIC);
+        tree_fix(&tree);
+        let img = dir.path().join("rootfs.img");
+        ext4_from(&tree, &img);
+        check(
+            &table(),
+            &boot_partition(KERNEL, BOOTARGS, false),
+            &img,
+            known,
+        )
+    }
+
+    #[test]
+    fn a_system_without_workspace_is_no_vendor_system() {
+        let c = run_tree(
+            |t| std::fs::remove_file(t.join("workspace")).unwrap(),
+            &known(),
+        );
+        assert!(
+            codes(&c).contains(&"stop tron.no_vendor_system".to_string()),
+            "{:?}",
+            c.findings
+        );
+    }
+
+    #[test]
+    fn links_out_of_the_vendor_parts_stop_or_leave_the_part_out() {
+        let outside = |t: &Path| {
+            std::os::unix::fs::symlink("../../../../root", t.join("usr/lib/modules/5.10.209/build"))
+                .unwrap()
+        };
+        assert!(codes(&run_tree(outside, &known())).contains(&"stop tron.part_link".to_string()));
+        let absolute = |t: &Path| {
+            std::fs::create_dir_all(t.join("usr/lib/kernel/driver")).unwrap();
+            std::os::unix::fs::symlink("/etc/shadow", t.join("usr/lib/kernel/driver/x")).unwrap()
+        };
+        let c = run_tree(absolute, &known());
+        assert!(!c.stopped(), "{:?}", c.findings);
+        assert!(codes(&c).contains(&"info tron.optional_left_out".to_string()));
     }
 }

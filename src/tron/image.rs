@@ -28,9 +28,12 @@ pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<Str
     );
     let mut src =
         File::open(&base.path).with_context(|| format!("open {}", base.path.display()))?;
-    let mut dst = File::options()
-        .write(true)
-        .create_new(true)
+    // It holds the Wi-Fi keys: readable by the owner only.
+    let mut options = File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut dst = options
         .open(out)
         .with_context(|| format!("create {}", out.display()))?;
     let mut hash = Sha256::new();
@@ -232,7 +235,7 @@ mod tests {
             partition: "rootfs".into(),
             first_sector: 40,
             sectors: 30,
-            partition_sectors: 50,
+            partition_sectors: 30,
             image,
             sha256: format!("{:x}", Sha256::digest(&data)),
         };

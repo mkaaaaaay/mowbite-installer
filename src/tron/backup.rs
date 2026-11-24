@@ -2,9 +2,9 @@
 //! bytes), the start areas and the rootfs a second time and compared, so a reading fault cannot slip in unnoticed.
 
 use crate::disk::{Disk, SECTOR};
-use crate::mower::{Cancel, Part, Progress};
+use crate::mower::{Backup, Cancel, Part, Progress};
 use crate::store::{NewFile, Store};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -13,6 +13,11 @@ use std::io::{Read, Write};
 pub const READ_SECTORS: u64 = 16384;
 /// Areas read twice: everything the loader and kernel start from, and the partition that gets written.
 const TWICE: [&str; 6] = ["flash-start", "uboot", "misc", "boot", "recovery", "rootfs"];
+/// The loader writes misc on restarts, so between runs it may differ from the backup.
+const CHANGES_ON_RESTART: &str = "misc";
+/// What a run says when an area saved in an earlier run differs from the device now.
+const CHANGED: &str = "the Tron changed since this backup was started (it started its system or was updated): \
+                       start again with a new, empty backup folder";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Area {
@@ -127,9 +132,53 @@ pub fn open_raw(store: &Store, name: &str) -> Result<impl Read + use<>> {
 }
 
 pub fn raw_sha256(store: &Store, name: &str) -> Result<String> {
+    unpacked_sha256(open_raw(store, name)?)
+}
+
+fn unpacked_sha256(raw: impl Read) -> Result<String> {
     let mut hash = Sha256::new();
-    std::io::copy(&mut open_raw(store, name)?, &mut hash)?;
+    std::io::copy(&mut { raw }, &mut hash)?;
     Ok(format!("{:x}", hash.finalize()))
+}
+
+/// The first area read twice (misc aside) whose bytes on the device differ from the backup, None when all match.
+/// The rootfs is among them and the vendor system writes to it on every start, so a match also means the areas
+/// read once are still as saved.
+pub async fn differs_from_device<D: Disk>(
+    disk: &mut D,
+    backup: &Backup,
+    cancel: &Cancel,
+    progress: &dyn Progress,
+) -> Result<Option<String>> {
+    let compared: Vec<Area> = areas(&backup.table, disk.sectors())?
+        .into_iter()
+        .filter(|a| a.twice && a.name != CHANGES_ON_RESTART)
+        .collect();
+    let total: u64 = compared.iter().map(|a| a.sectors * SECTOR).sum();
+    let mut done_bytes = 0u64;
+    for area in &compared {
+        let want = backup
+            .files
+            .iter()
+            .find(|(f, _)| *f == area.file())
+            .map(|(_, sum)| sum.clone())
+            .with_context(|| format!("the backup has no {}", area.file()))?;
+        let got = read_area(
+            disk,
+            area,
+            cancel,
+            &mut |n| {
+                done_bytes += n;
+                progress.bytes(done_bytes, total);
+            },
+            &mut |_| Ok(()),
+        )
+        .await?;
+        if got != want {
+            return Ok(Some(area.name.clone()));
+        }
+    }
+    Ok(None)
 }
 
 /// Saves every area that is not in the store yet and returns (file, sha256) of all of them. Finished files are kept
@@ -154,7 +203,8 @@ pub async fn backup<D: Disk>(
             done_bytes += n;
             progress.bytes(done_bytes, total);
         };
-        let sum = if store.recorded(&name)?.is_some() {
+        let recorded = store.recorded(&name)?.is_some();
+        let sum = if recorded {
             done(area.sectors * SECTOR);
             raw_sha256(store, &name)?
         } else {
@@ -169,20 +219,26 @@ pub async fn backup<D: Disk>(
             })
             .await?;
             packed.finish()?;
-            file.finish()?;
+            // Checked before its line goes into SHA256SUMS: a finished file always unpacks to what was read.
             ensure!(
-                raw_sha256(store, &name)? == sum,
+                unpacked_sha256(zstd::Decoder::new(File::open(store.path(&name)?)?)?)? == sum,
                 "{name}: the saved file does not unpack to what was read"
             );
+            file.finish()?;
             sum
         };
-        if area.twice {
+        if area.twice && !(recorded && area.name == CHANGES_ON_RESTART) {
             let again = read_area(disk, area, cancel, &mut done, &mut |_| Ok(())).await?;
+            if recorded {
+                ensure!(again == sum, "{}: {CHANGED}", area.name);
+            }
             ensure!(
                 again == sum,
                 "{}: the second read differs from the first, the USB connection is not reliable",
                 area.name
             );
+        } else if area.twice {
+            done(area.sectors * SECTOR);
         }
         out.push((name, sum));
     }

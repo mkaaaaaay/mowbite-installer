@@ -3,6 +3,7 @@
 
 use super::checks::Known;
 use super::pack::Archive;
+use super::rootfs;
 use crate::mower::Inputs;
 use anyhow::{Context, Result, ensure};
 use ext4_view::Ext4;
@@ -10,6 +11,8 @@ use sha2::{Digest, Sha256};
 
 pub const CONNECTIONS: &str = "etc/NetworkManager/system-connections";
 pub const INBOX: &str = "userdata/mowbite-update/inbox";
+/// Random value of this install, 32 hex digits.
+pub const INSTALL_ID: &str = "etc/mowbite/install-id";
 /// Interface of the setup access point; wlan0 stays for the home Wi-Fi.
 pub const SETUP_IFACE: &str = "wlan1";
 
@@ -18,8 +21,9 @@ fn ssid(name: &str) -> String {
     name.bytes().map(|b| format!("{b};")).collect()
 }
 
-/// A WPA key as a keyfile string: printable ASCII only, spaces and backslashes escaped.
-fn psk(key: &str) -> Result<String> {
+/// A WPA key as a keyfile string: printable ASCII only, spaces and backslashes escaped. The frame checks typed keys
+/// with it too.
+pub fn psk(key: &str) -> Result<String> {
     ensure!(
         (8..=63).contains(&key.len()) && key.bytes().all(|b| (0x20..0x7f).contains(&b)),
         "a Wi-Fi key has 8 to 63 printable characters"
@@ -66,12 +70,14 @@ fn hostname(name: &str) -> Result<String> {
 /// The archive for one Tron. `vendor` is its saved rootfs, `mtime` the time stamp of every entry.
 pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Result<Vec<u8>> {
     let mut a = Archive::new(mtime);
+    let parts = known.parts();
     for part in &known.required {
-        a.vendor_part(vendor, part)?;
+        a.vendor_part(vendor, &rootfs::take(vendor, part, &parts)?)?;
     }
+    // As check: an optional part that cannot be taken whole stays out.
     for part in &known.optional {
-        if vendor.exists(part.as_str()).unwrap_or(false) {
-            a.vendor_part(vendor, part)?;
+        if let Ok(entries) = rootfs::take(vendor, part, &parts) {
+            a.vendor_part(vendor, &entries)?;
         }
     }
     a.file(
@@ -80,6 +86,12 @@ pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Resul
         (0, 0),
         hostname(&inputs.device_name)?.as_bytes(),
     )?;
+    // The host answers the first-start check with it, so the PC knows it reached this Tron.
+    let mut id = [0u8; 16];
+    getrandom::getrandom(&mut id)
+        .map_err(|e| anyhow::anyhow!("no random numbers from the system: {e}"))?;
+    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    a.file(INSTALL_ID, 0o600, (0, 0), format!("{id}\n").as_bytes())?;
     let tag = &format!("{:x}", Sha256::digest(inputs.wifi_name.as_bytes()))[..8];
     let id = format!("mowbite-wifi-{tag}");
     a.file(
@@ -184,6 +196,38 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+        let id = std::fs::read_to_string(out.join(INSTALL_ID)).unwrap();
+        assert!(
+            id.len() == 33 && id.ends_with('\n') && id[..32].bytes().all(|b| b.is_ascii_hexdigit())
+        );
+        let mode = std::fs::metadata(out.join(INSTALL_ID))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn an_optional_part_that_check_leaves_out_stays_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        vendor_tree(&tree, GOOD_VERMAGIC);
+        std::os::unix::fs::symlink("/etc/shadow", tree.join("etc/iqfiles/x")).unwrap();
+        let img = dir.path().join("rootfs.img");
+        ext4_from(&tree, &img);
+        let fs = crate::tron::rootfs::open(&img, 0).unwrap();
+        let known = Known {
+            tables: vec![],
+            required: vec!["/usr/lib/modules/5.10.209".into()],
+            optional: vec!["/etc/iqfiles".into()],
+            vendor_versions: vec![],
+        };
+        let archive = build(&fs, &known, &inputs(dir.path()), 0).unwrap();
+        assert!(
+            !archive
+                .windows(b"etc/iqfiles".len())
+                .any(|w| w == b"etc/iqfiles")
+        );
     }
 
     #[test]

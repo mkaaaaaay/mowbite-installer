@@ -13,8 +13,18 @@ pub struct Fdt<'a> {
 }
 
 fn be32(b: &[u8], o: usize) -> Result<u32> {
-    let s = b.get(o..o + 4).context("device tree cut short")?;
+    let end = o.checked_add(4).context("device tree offset too large")?;
+    let s = b.get(o..end).context("device tree cut short")?;
     Ok(u32::from_be_bytes(s.try_into().unwrap()))
+}
+
+/// `at + len` rounded up to the next multiple of 4.
+fn align4(at: usize, len: usize) -> Result<usize> {
+    Ok(at
+        .checked_add(len)
+        .and_then(|n| n.checked_add(3))
+        .context("device tree offset too large")?
+        & !3)
 }
 
 fn c_str(b: &[u8], o: usize) -> Result<&str> {
@@ -42,7 +52,7 @@ impl<'a> Fdt<'a> {
             match token {
                 1 => {
                     let name = c_str(blob, p)?;
-                    p = (p + name.len() + 1 + 3) & !3;
+                    p = align4(p, name.len() + 1)?;
                     path.push(name);
                 }
                 2 => {
@@ -57,10 +67,13 @@ impl<'a> Fdt<'a> {
                         range.end <= blob.len(),
                         "property past the end of the device tree"
                     );
-                    let name = c_str(blob, strings + name_off)?;
+                    let at = strings
+                        .checked_add(name_off)
+                        .context("device tree string offset too large")?;
+                    let name = c_str(blob, at)?;
                     ensure!(!path.is_empty(), "device tree property outside a node");
                     props.push((path[1..].join("/"), name.to_string(), range));
-                    p = (p + len + 3) & !3;
+                    p = align4(p, len)?;
                 }
                 4 => {}
                 9 => break,
@@ -120,9 +133,12 @@ fn image_data<'a>(part: &'a [u8], fit: &Fdt<'a>, node: &str) -> Result<&'a [u8]>
             .u32(node, "data-offset")
             .with_context(|| format!("{node} has no data"))?;
         // External data starts right after the FIT header, 4-byte aligned.
-        ((be32(part, 4)? as usize + 3) & !3) + off
+        align4(be32(part, 4)? as usize, 0)?
+            .checked_add(off)
+            .context("data offset too large")?
     };
-    part.get(start..start + size)
+    let end = start.checked_add(size).context("data size too large")?;
+    part.get(start..end)
         .with_context(|| format!("{node} data past the end of the partition"))
 }
 

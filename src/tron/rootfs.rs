@@ -123,6 +123,62 @@ pub fn collect(fs: &Ext4, part: &str) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// Where a link at `path` points, as a path from the root; None when it is absolute or leaves the root.
+pub fn link_target(path: &str, target: &str) -> Option<String> {
+    if target.starts_with('/') {
+        return None;
+    }
+    let mut out: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    out.pop();
+    for piece in target.split('/') {
+        match piece {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            p => out.push(p),
+        }
+    }
+    Some(format!("/{}", out.join("/")))
+}
+
+/// A vendor part as it goes into the pack: everything below it, each link relative and pointing into one of
+/// `parts`. check and the pack both take a part only through this, so they decide alike.
+pub fn take(fs: &Ext4, part: &str, parts: &[String]) -> Result<Vec<Entry>> {
+    let entries = collect(fs, part)?;
+    for e in &entries {
+        if let Kind::Link { target } = &e.kind {
+            let inside = link_target(&e.path, target).is_some_and(|to| {
+                parts
+                    .iter()
+                    .any(|p| to == *p || to.starts_with(&format!("{p}/")))
+            });
+            if !inside {
+                return Err(anyhow!(
+                    "{}: link to {target} points outside the vendor parts",
+                    e.path
+                )
+                .context(OutsideLink));
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Marks the error of take() for a link that leaves the vendor parts.
+#[derive(Debug)]
+pub struct OutsideLink;
+
+impl std::fmt::Display for OutsideLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("link outside the vendor parts")
+    }
+}
+
+pub fn is_outside_link(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<OutsideLink>().is_some()
+}
+
 /// Folders under /usr/lib/modules; the vendor rootfs carries one for an older kernel next to the running one.
 pub fn module_dirs(fs: &Ext4) -> Result<Vec<String>> {
     names(fs, MODULES)
@@ -296,5 +352,20 @@ pub(crate) mod tests {
         );
         assert_eq!(vermagic(b"vermagic=5.10 SMP"), None);
         assert_eq!(vermagic(b"nothing"), None);
+    }
+
+    #[test]
+    fn link_targets_resolve_from_the_link_folder() {
+        assert_eq!(
+            link_target("/usr/lib/a/libx.so", "libx.so.2").as_deref(),
+            Some("/usr/lib/a/libx.so.2")
+        );
+        assert_eq!(
+            link_target("/usr/lib/a/b", "../c/./d").as_deref(),
+            Some("/usr/lib/c/d")
+        );
+        assert_eq!(link_target("/etc/x", "../root").as_deref(), Some("/root"));
+        assert_eq!(link_target("/etc/x", "../../../root"), None);
+        assert_eq!(link_target("/etc/x", "/root"), None);
     }
 }
