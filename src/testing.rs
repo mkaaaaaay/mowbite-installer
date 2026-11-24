@@ -114,10 +114,7 @@ impl Mower for Fake {
         if *self.fail_write.borrow() {
             bail!("the cable came off");
         }
-        match self.write_error.borrow_mut().take() {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        self.write_error.borrow_mut().take().map_or(Ok(()), Err)
     }
     async fn start_seen(&self) -> Result<StartSeen> {
         let next = {
@@ -139,10 +136,7 @@ impl Mower for Fake {
     }
     async fn back(&self, _: (), _: &Backup, _: &mut Ctx<'_>) -> Result<()> {
         self.calls.borrow_mut().push("back");
-        match self.write_error.borrow_mut().take() {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        self.write_error.borrow_mut().take().map_or(Ok(()), Err)
     }
 }
 
@@ -180,7 +174,6 @@ impl World {
                 setup_wifi_key: Secret::new("x".into()),
                 install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),
                 bundles: vec![],
-                bundle_sha256: vec![],
             },
         }
     }

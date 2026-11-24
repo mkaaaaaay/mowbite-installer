@@ -166,15 +166,21 @@ fn text_of<'a>(texts: &[(&str, &'a str, &'a str)], code: &'a str) -> &'a str {
         .map_or(code, |&(_, de, en)| if german() { de } else { en })
 }
 
-/// An error whose message starts with a code ("tron.no_serial: ...") with the text of the code instead.
+/// An error with a code in its chain ("tron.no_serial: ...") with the text of the code from there on.
 fn explain(texts: &[(&str, &str, &str)], error: &anyhow::Error) -> String {
-    let message = format!("{error:#}");
-    match message.split_once(": ") {
-        Some((code, rest)) if texts.iter().any(|(key, _, _)| *key == code) => {
-            format!("{} ({rest})", text_of(texts, code))
+    let causes: Vec<String> = error.chain().map(ToString::to_string).collect();
+    for (i, cause) in causes.iter().enumerate() {
+        if let Some((code, rest)) = cause.split_once(": ") {
+            if texts.iter().any(|(key, _, _)| *key == code) {
+                let rest = std::iter::once(rest)
+                    .chain(causes[i + 1..].iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(": ");
+                return format!("{} ({rest})", text_of(texts, code));
+            }
         }
-        _ => message,
     }
+    causes.join(": ")
 }
 
 fn show(owner: &dyn Owner, texts: &[(&str, &str, &str)], findings: &[Finding]) {
@@ -238,12 +244,11 @@ pub async fn run<M: Mower, F: FirstStart>(
     let bar = Bar::new();
     let mut waiting_since: Option<Instant> = None;
     let leave = |driver: &mut Driver<'_, M>, owner: &dyn Owner| -> Result<bool> {
-        if driver.run.writing {
-            owner.say(INCOMPLETE);
+        owner.say(if driver.leave()? {
+            NOTHING_WRITTEN
         } else {
-            driver.leave()?;
-            owner.say(NOTHING_WRITTEN);
-        }
+            INCOMPLETE
+        });
         Ok(false)
     };
     loop {
@@ -268,13 +273,7 @@ pub async fn run<M: Mower, F: FirstStart>(
             Err(error) => {
                 owner.say(&format!("Error: {}", explain(texts, &error)));
                 log.info("error", &format!("{error:#}"));
-                // Before writing a lost cable or a time out is mended by plugging in again.
-                let mendable = !driver.run.writing
-                    && matches!(
-                        driver.run.step,
-                        Step::Connect | Step::Backup | Step::Check | Step::Write
-                    );
-                if mendable && owner.again() {
+                if driver.mendable() && owner.again() {
                     driver.reconnect()?;
                     waiting_since = None;
                     continue;
@@ -382,6 +381,20 @@ mod tests {
     use super::*;
     use crate::testing::{Fake, World};
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn a_code_under_nothing_written_still_gets_its_text() {
+        let texts = [("tron.table_changed", "Tabelle", "Table")];
+        let error = anyhow::anyhow!("tron.table_changed: rootfs moved")
+            .context(crate::mower::NothingWritten);
+        let shown = explain(&texts, &error);
+        assert!(
+            shown.ends_with(" (rootfs moved)") && !shown.contains("tron."),
+            "{shown}"
+        );
+        let plain = anyhow::anyhow!("USB timeout").context("reading");
+        assert_eq!(explain(&texts, &plain), "reading: USB timeout");
+    }
 
     #[derive(Default)]
     struct Script {

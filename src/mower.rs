@@ -8,7 +8,6 @@ use crate::secret::Secret;
 use crate::store::Store;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -179,27 +178,24 @@ pub struct Inputs {
     pub setup_wifi_key: Secret<String>,
     /// 32 hex digits from the sheet: the mower proves its answers on the network with it.
     pub install_id: Secret<String>,
-    /// Signed bundles (os, app, planner) for the inbox.
-    pub bundles: Vec<PathBuf>,
-    /// sha256 of each bundle when its signature was checked.
-    pub bundle_sha256: Vec<String>,
+    /// Signed bundles (os, app, planner) and their .sig files for the inbox.
+    pub bundles: Vec<Bundle>,
+}
+
+/// A file for the inbox with its sha256 when its signature was checked.
+pub struct Bundle {
+    pub path: PathBuf,
+    pub sha256: String,
 }
 
 impl Inputs {
     /// The bundles are still the bytes whose signatures were checked at the start.
     pub fn unchanged(&self) -> Result<()> {
-        anyhow::ensure!(
-            self.bundles.len() == self.bundle_sha256.len(),
-            "bundles without their sha256"
-        );
-        for (path, want) in self.bundles.iter().zip(&self.bundle_sha256) {
-            let mut file = std::fs::File::open(path)?;
-            let mut hash = sha2::Sha256::new();
-            std::io::copy(&mut file, &mut hash)?;
+        for b in &self.bundles {
             anyhow::ensure!(
-                format!("{:x}", hash.finalize()) == *want,
+                crate::store::sha256_file(&b.path)? == b.sha256,
                 "{} changed since its signature was checked",
-                path.display()
+                b.path.display()
             );
         }
         Ok(())

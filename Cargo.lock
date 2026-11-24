@@ -707,6 +707,7 @@ dependencies = [
  "ext4-view",
  "flate2",
  "getrandom 0.2.17",
+ "hmac",
  "libc",
  "mdns-sd",
  "nusb",

@@ -5,10 +5,10 @@
 
 use crate::secret::Secret;
 use crate::text::FirstStart;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::cell::RefCell;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
@@ -42,23 +42,10 @@ pub async fn find(wait: Duration) -> Result<Vec<(String, IpAddr, u16)>> {
 
 /// HMAC-SHA256 (RFC 2104) in hex.
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> String {
-    const BLOCK: usize = 64;
-    let mut block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let pad = |byte: u8| block.iter().map(|b| b ^ byte).collect::<Vec<u8>>();
-    let inner = Sha256::new()
-        .chain_update(pad(0x36))
-        .chain_update(message)
-        .finalize();
-    let outer = Sha256::new()
-        .chain_update(pad(0x5c))
-        .chain_update(inner)
-        .finalize();
-    outer.iter().map(|b| format!("{b:02x}")).collect()
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(message);
+    crate::store::hex(&mac.finalize().into_bytes())
 }
 
 /// Ok(None) for {"trial": false} with the expected proof; Ok(Some(why)) for a refusal the owner can wait out or an
@@ -136,12 +123,6 @@ fn rand_id() -> u64 {
     (t as u64) ^ u64::from(std::process::id()).rotate_left(32)
 }
 
-fn challenge() -> Result<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|e| anyhow!("no randomness from the system: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
 /// Finds the mower by its name (from the pack) and confirms its start; remembers the addresses that answered and
 /// looks again once none does.
 pub struct Confirm {
@@ -160,7 +141,7 @@ impl Confirm {
     }
 
     async fn ask(&self, addr: IpAddr, port: u16) -> Result<Option<String>> {
-        let challenge = challenge()?;
+        let challenge = crate::secret::random_hex(32)?;
         let proof = hmac_sha256(self.install_id.expose().as_bytes(), challenge.as_bytes());
         let answer = call(
             addr,

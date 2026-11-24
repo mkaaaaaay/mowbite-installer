@@ -174,8 +174,8 @@ impl<P: Port> Mower for Tron<P> {
 
     fn check_inputs(&self, base: &BaseImage, inputs: &Inputs) -> Result<()> {
         let mut bundles = 0u64;
-        for path in &inputs.bundles {
-            bundles += std::fs::metadata(path)?.len();
+        for b in &inputs.bundles {
+            bundles += std::fs::metadata(&b.path)?.len();
         }
         let room = image::room(base);
         ensure!(

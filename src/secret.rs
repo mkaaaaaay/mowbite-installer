@@ -3,6 +3,14 @@ use std::fmt;
 /// A value that must never reach a log, a page or an error text: no Display, Debug prints a mask.
 pub struct Secret<T>(T);
 
+/// `bytes` random bytes from the system in hex.
+pub fn random_hex(bytes: usize) -> anyhow::Result<String> {
+    let mut buf = vec![0u8; bytes];
+    getrandom::getrandom(&mut buf)
+        .map_err(|e| anyhow::anyhow!("no randomness from the system: {e}"))?;
+    Ok(crate::store::hex(&buf))
+}
+
 impl<T> Secret<T> {
     pub fn new(value: T) -> Self {
         Secret(value)

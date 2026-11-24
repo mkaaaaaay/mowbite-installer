@@ -166,13 +166,6 @@ impl Run {
     }
 }
 
-fn bail_if_writing(run: &Run) -> Result<()> {
-    if run.writing {
-        bail!("the system on the device is not complete: write again or go back");
-    }
-    Ok(())
-}
-
 /// What the frame has to do or ask before the next step.
 #[derive(Debug, PartialEq)]
 pub enum Next {
@@ -350,21 +343,15 @@ impl<'m, M: Mower> Driver<'m, M> {
         let was_writing = self.run.writing;
         self.run.writing = true;
         self.run.save(&self.root)?;
-        let goal = self.run.goal;
-        let result = match goal {
+        let (result, after) = match self.run.goal {
             Goal::Install => {
                 let plan = self.run.plan.as_ref().expect("made at Prepare");
-                self.mower.write(dev, plan, ctx).await
+                (self.mower.write(dev, plan, ctx).await, Step::FirstStart)
             }
             Goal::Back => {
                 let backup = self.run.backup.as_ref().expect("the backup of this mower");
-                self.mower.back(dev, backup, ctx).await
+                (self.mower.back(dev, backup, ctx).await, Step::Done)
             }
-        };
-        let after = if goal == Goal::Install {
-            Step::FirstStart
-        } else {
-            Step::Done
         };
         match result {
             Ok(()) => {
@@ -428,20 +415,32 @@ impl<'m, M: Mower> Driver<'m, M> {
         self.to(Step::Connect)
     }
 
+    /// Whether an error here is mended by plugging in again: before writing a lost cable or a time out is.
+    pub fn mendable(&self) -> bool {
+        !self.run.writing
+            && matches!(
+                self.run.step,
+                Step::Connect | Step::Backup | Step::Check | Step::Write
+            )
+    }
+
     /// After an error before writing: the device is opened again from Connect.
     pub fn reconnect(&mut self) -> Result<()> {
-        bail_if_writing(&self.run)?;
+        if self.run.writing {
+            bail!("the system on the device is not complete: write again or go back");
+        }
         self.dev = None;
         self.to(Step::Connect)
     }
 
-    /// The frame ends the run without writing: the prepared image goes.
-    pub fn leave(&mut self) -> Result<()> {
-        if !self.run.writing {
-            self.run.discard_plan();
-            self.run.save(&self.root)?;
+    /// The frame ends the run: without writing the prepared image goes. Ok(true) when nothing was written.
+    pub fn leave(&mut self) -> Result<bool> {
+        if self.run.writing {
+            return Ok(false);
         }
-        Ok(())
+        self.run.discard_plan();
+        self.run.save(&self.root)?;
+        Ok(true)
     }
 
     /// The frame confirmed the first start on the network.

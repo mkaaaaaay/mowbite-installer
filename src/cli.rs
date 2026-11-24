@@ -1,7 +1,7 @@
 //! The command line of the text mode: install or back, the backup folder and the folder with the release files.
 //! Loads the release files against the built-in keys and asks the owner for the Wi-Fi.
 
-use crate::mower::{BaseImage, Inputs, Mower, Tables, WorkDir};
+use crate::mower::{BaseImage, Bundle, Inputs, Mower, Tables, WorkDir};
 use crate::net::Confirm;
 use crate::release;
 use crate::run::Goal;
@@ -119,7 +119,7 @@ pub fn os_needs_base(bundle: &Path) -> Result<Option<u32>> {
 
 /// The bundles for the inbox, each checked against its component's key; each comes with its .sig, which the
 /// mower checks again. With the sha256 of each file as checked.
-pub fn bundles(release: &Path, signers: &Signers) -> Result<(Vec<PathBuf>, Vec<String>)> {
+pub fn bundles(release: &Path, signers: &Signers) -> Result<Vec<Bundle>> {
     let mut names: Vec<String> = std::fs::read_dir(release)
         .with_context(|| release.display().to_string())?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -127,8 +127,7 @@ pub fn bundles(release: &Path, signers: &Signers) -> Result<(Vec<PathBuf>, Vec<S
         .collect();
     names.sort();
     let mut out = Vec::new();
-    let mut sums = Vec::new();
-    let hex = |data: &[u8]| format!("{:x}", sha2::Sha256::digest(data));
+    let hex = |data: &[u8]| crate::store::hex(&sha2::Sha256::digest(data));
     for component in BUNDLES {
         let prefix = format!("mowbite-{component}-");
         let found: Vec<&String> = names.iter().filter(|n| n.starts_with(&prefix)).collect();
@@ -140,18 +139,22 @@ pub fn bundles(release: &Path, signers: &Signers) -> Result<(Vec<PathBuf>, Vec<S
         };
         let path = release.join(name);
         let data = std::fs::read(&path).with_context(|| path.display().to_string())?;
-        signers
-            .verify(&data, &signature(&path)?, &format!("mowbite-{component}"))
-            .with_context(|| name.to_string())?;
         let sig_text = signature(&path)?;
+        signers
+            .verify(&data, &sig_text, &format!("mowbite-{component}"))
+            .with_context(|| name.to_string())?;
         let mut sig = path.clone().into_os_string();
         sig.push(".sig");
-        out.push(path);
-        sums.push(hex(&data));
-        out.push(sig.into());
-        sums.push(hex(sig_text.as_bytes()));
+        out.push(Bundle {
+            path,
+            sha256: hex(&data),
+        });
+        out.push(Bundle {
+            path: sig.into(),
+            sha256: hex(sig_text.as_bytes()),
+        });
     }
-    Ok((out, sums))
+    Ok(out)
 }
 
 fn random(len: usize) -> Result<String> {
@@ -167,12 +170,6 @@ fn random(len: usize) -> Result<String> {
         }
     }
     Ok(out)
-}
-
-fn hex_id() -> Result<String> {
-    let mut id = [0u8; 16];
-    getrandom::getrandom(&mut id).map_err(|e| anyhow!("no randomness from the system: {e}"))?;
-    Ok(id.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// What the sheet beside the backup holds for one mower.
@@ -192,7 +189,7 @@ pub fn setup(store: &Path) -> Result<Setup> {
             "MowBite setup Wi-Fi of this mower. Keep this sheet to yourself.\nname={}\nkey={}\nid={}\n",
             format_args!("mowbite-{}", random(4)?),
             random(KEY_LEN)?,
-            hex_id()?
+            crate::secret::random_hex(16)?
         );
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -263,9 +260,9 @@ pub async fn run<M: Mower>(
     let (base, inputs) = match args.goal {
         Goal::Install => {
             let (base, base_number) = base(&args.release, signers, mower.id())?;
-            let (bundles, bundle_sha256) = bundles(&args.release, signers)?;
+            let bundles = bundles(&args.release, signers)?;
             if let Some(os) = bundles.first() {
-                if let Some(needs) = os_needs_base(os)? {
+                if let Some(needs) = os_needs_base(&os.path)? {
                     ensure!(
                         base_number >= needs,
                         "the OS bundle needs base system {needs}, the release folder has {base_number}"
@@ -287,7 +284,6 @@ pub async fn run<M: Mower>(
                 setup_wifi_key: setup.key,
                 install_id: setup.install_id,
                 bundles,
-                bundle_sha256,
             };
             mower.check_inputs(&base, &inputs)?;
             (base, inputs)
@@ -306,7 +302,6 @@ pub async fn run<M: Mower>(
                 setup_wifi_key: Secret::new(String::new()),
                 install_id: Secret::new(String::new()),
                 bundles: Vec::new(),
-                bundle_sha256: Vec::new(),
             },
         ),
     };
@@ -405,8 +400,10 @@ mod tests {
         let path = dir.path().join("b");
         std::fs::write(&path, b"signed").unwrap();
         let mut inputs = crate::testing::World::new().inputs;
-        inputs.bundles = vec![path.clone()];
-        inputs.bundle_sha256 = vec![format!("{:x}", sha2::Sha256::digest(b"signed"))];
+        inputs.bundles = vec![Bundle {
+            path: path.clone(),
+            sha256: format!("{:x}", sha2::Sha256::digest(b"signed")),
+        }];
         assert!(inputs.unchanged().is_ok());
         std::fs::write(&path, b"swapped").unwrap();
         assert!(inputs.unchanged().is_err());
@@ -469,11 +466,10 @@ mod tests {
             "mowbite namespaces=\"mowbite-os,mowbite-planner,mowbite-app\" {public}\n"
         ))
         .unwrap();
-        let (found, sums) = bundles(&release, &signers).unwrap();
-        assert_eq!(sums.len(), found.len());
+        let found = bundles(&release, &signers).unwrap();
         let names: Vec<_> = found
             .iter()
-            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .map(|b| b.path.file_name().unwrap().to_str().unwrap())
             .collect();
         assert_eq!(
             names,

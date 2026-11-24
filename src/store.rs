@@ -21,8 +21,15 @@ pub struct NewFile {
     root: PathBuf,
 }
 
-fn hex(digest: &[u8]) -> String {
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path).with_context(|| path.display().to_string())?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut file, &mut hash)?;
+    Ok(hex(&hash.finalize()))
 }
 
 fn check_name(name: &str) -> Result<()> {

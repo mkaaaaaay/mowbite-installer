@@ -107,7 +107,7 @@ pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Resul
         (0, 0),
         setup_ap(&inputs.device_name, inputs.setup_wifi_key.expose())?.as_bytes(),
     )?;
-    for bundle in &inputs.bundles {
+    for bundle in inputs.bundles.iter().map(|b| &b.path) {
         let name = bundle
             .file_name()
             .and_then(|n| n.to_str())
@@ -134,8 +134,10 @@ mod tests {
             device_name: "mowbite-ab12".into(),
             setup_wifi_key: Secret::new("setup-key-1".into()),
             install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),
-            bundles: vec![bundle],
-            bundle_sha256: vec![],
+            bundles: vec![crate::mower::Bundle {
+                path: bundle,
+                sha256: String::new(),
+            }],
         }
     }
 

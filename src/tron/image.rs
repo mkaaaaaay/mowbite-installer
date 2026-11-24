@@ -4,6 +4,7 @@
 use super::pack;
 use crate::disk::{Bounded, Disk, SECTOR, Window};
 use crate::mower::{BaseImage, Cancel, NothingWritten, Progress, WritePlan};
+use crate::store::sha256_file;
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -83,20 +84,6 @@ pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<Str
     dst.sync_all()?;
     drop(dst);
     sha256_file(out)
-}
-
-pub fn sha256_file(path: &Path) -> Result<String> {
-    let mut f = File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buf = vec![0u8; COPY];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
 }
 
 /// Writes plan.sectors sectors from `src` into the rootfs window and reads them back; Ok only when both match
