@@ -3,11 +3,14 @@
 pub mod back;
 pub mod backup;
 pub mod checks;
+pub mod contents;
 pub mod fit;
 pub mod gpt;
 pub mod identity;
 pub mod image;
+pub mod module;
 pub mod pack;
+pub mod port;
 pub mod rootfs;
 pub mod tables;
 pub mod texts;

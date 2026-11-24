@@ -2,6 +2,36 @@
 
 pub const TEXTS: &[(&str, &str, &str)] = &[
     (
+        "tron.guide_battery",
+        "Der Akku bleibt in der Tron. Die Tron steht nicht auf der Ladestation und ist ausgeschaltet.",
+        "The battery stays in the Tron. The Tron is off and not on its charging station.",
+    ),
+    (
+        "tron.guide_camera",
+        "Die obere Kamera-Einheit abnehmen. Dahinter liegt eine USB-C-Buchse.",
+        "Take off the upper camera unit. A USB-C socket sits behind it.",
+    ),
+    (
+        "tron.guide_cable",
+        "Ein USB-Kabel von dieser Buchse zum PC stecken.",
+        "Connect a USB cable from this socket to the PC.",
+    ),
+    (
+        "tron.guide_button",
+        "Taste B gedrückt halten und die Tron einschalten. Die Taste loslassen, wenn der Installer die Tron sieht.",
+        "Hold button B and switch the Tron on. Let go when the installer sees the Tron.",
+    ),
+    (
+        "tron.no_serial",
+        "Die Seriennummer der Tron ist nicht lesbar. Ohne sie kann der Installer die Sicherung nicht sicher zuordnen.",
+        "The serial number of the Tron cannot be read. Without it the installer cannot match the backup safely.",
+    ),
+    (
+        "tron.table_changed",
+        "Die Partitionstabelle der Tron hat sich seit der Sicherung geändert.",
+        "The partition table of the Tron changed since the backup.",
+    ),
+    (
         "tron.table_unreadable",
         "Die Partitionstabelle der Tron ist nicht lesbar.",
         "The partition table of the Tron cannot be read.",
@@ -105,6 +135,9 @@ mod tests {
         include_str!("gpt.rs"),
         include_str!("identity.rs"),
         include_str!("image.rs"),
+        include_str!("module.rs"),
+        include_str!("contents.rs"),
+        include_str!("port.rs"),
         include_str!("pack.rs"),
         include_str!("rootfs.rs"),
         include_str!("tables.rs"),

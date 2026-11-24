@@ -88,12 +88,12 @@ impl TronUsb {
         })
     }
 
-    /// Restarts into maskrom; the handle is used up, the device comes back as a new one.
-    pub async fn reboot_maskrom(mut self) -> Result<()> {
+    /// Restarts into the system on the flash; the handle is used up.
+    pub async fn restart(mut self) -> Result<()> {
         limited(
             &mut self.broken,
-            "restart into maskrom",
-            self.dev.reset_device(ResetOpcode::Maskrom),
+            "restart",
+            self.dev.reset_device(ResetOpcode::Reset),
         )
         .await
     }

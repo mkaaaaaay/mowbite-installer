@@ -169,7 +169,7 @@ impl World {
         self.store.root().to_path_buf()
     }
 
-    pub async fn step(&mut self, driver: &mut Driver<'_, Fake>) -> Result<Next> {
+    pub async fn step<M: Mower>(&mut self, driver: &mut Driver<'_, M>) -> Result<Next> {
         let mut ctx = Ctx {
             store: &mut self.store,
             work: &self.work,
@@ -182,7 +182,7 @@ impl World {
     }
 
     // Steps until the run needs the frame or the owner.
-    pub async fn until_asked(&mut self, driver: &mut Driver<'_, Fake>) -> Result<Next> {
+    pub async fn until_asked<M: Mower>(&mut self, driver: &mut Driver<'_, M>) -> Result<Next> {
         loop {
             match self.step(driver).await? {
                 Next::Go => continue,
