@@ -12,8 +12,10 @@ use std::io::Read;
 use std::path::Path;
 
 const SCHEMA: u64 = 1;
-/// The pack file of the base system starts on a block of the file system.
+/// Each piece of the pack file starts on a block of the file system.
 const PACK_ALIGN: u64 = 4096;
+/// 256 MiB of 4 KiB blocks across a few block groups give a handful of pieces.
+const MAX_PIECES: usize = 64;
 
 /// The section of module from a signed tables.json; the module reads its own format.
 pub fn tables(json: &[u8], sig: &str, signers: &Signers, module: &str) -> Result<Tables> {
@@ -58,8 +60,21 @@ struct Sidecar {
     file: String,
     size: u64,
     sha256: String,
-    pack_offset: u64,
-    pack_len: u64,
+    pack: Vec<(u64, u64)>,
+}
+
+/// The pieces lie in the image, are aligned and do not overlap.
+fn pack_fits(pack: &[(u64, u64)], size: u64) -> bool {
+    let mut sorted = pack.to_vec();
+    sorted.sort_unstable();
+    !pack.is_empty()
+        && pack.len() <= MAX_PIECES
+        && pack.iter().all(|&(offset, len)| {
+            len > 0
+                && offset % PACK_ALIGN == 0
+                && offset.checked_add(len).is_some_and(|end| end <= size)
+        })
+        && sorted.windows(2).all(|w| w[0].0 + w[0].1 <= w[1].0)
 }
 
 /// The base system at image, once its signed sidecar names this platform, this file, its size and its sha256.
@@ -86,11 +101,7 @@ pub fn base(
         .unwrap_or_default();
     ensure!(s.file == name, "base.json names {}, not {name}", s.file);
     ensure!(
-        s.pack_len > 0
-            && s.pack_offset % PACK_ALIGN == 0
-            && s.pack_offset
-                .checked_add(s.pack_len)
-                .is_some_and(|end| end <= s.size),
+        pack_fits(&s.pack, s.size),
         "the pack file of base.json does not lie inside the image"
     );
     let mut file = std::fs::File::open(image).with_context(|| image.display().to_string())?;
@@ -117,8 +128,7 @@ pub fn base(
     let image = BaseImage {
         path: image.to_path_buf(),
         sha256: got,
-        pack_offset: s.pack_offset,
-        pack_len: s.pack_len,
+        pack: s.pack,
     };
     Ok((image, s.base))
 }
@@ -162,7 +172,7 @@ mod tests {
     fn the_base_system_has_to_be_the_signed_one() {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("base-9.img");
-        let data = vec![7u8; 3 * 4096];
+        let data = vec![7u8; 5 * 4096];
         std::fs::write(&image, &data).unwrap();
         let sha: String = Sha256::digest(&data)
             .iter()
@@ -170,7 +180,7 @@ mod tests {
             .collect();
         let sidecar = |changes: Value| {
             let mut s = json!({"schema": 1, "platform": "tron", "base": 2, "file": "base-9.img", "size": data.len(),
-                "sha256": sha, "pack_offset": 4096, "pack_len": 4096});
+                "sha256": sha, "pack": [[12288, 4096], [4096, 4096]]});
             for (k, v) in changes.as_object().unwrap() {
                 s[k] = v.clone();
             }
@@ -183,17 +193,21 @@ mod tests {
         let keys = signers(&public);
         let (got, number) = base(good.as_bytes(), &sig, &keys, &image, "tron").unwrap();
         assert_eq!(
-            (got.pack_offset, got.pack_len, got.sha256.as_str(), number),
-            (4096, 4096, sha.as_str(), 2)
+            (got.pack, got.sha256.as_str(), number),
+            (vec![(12288, 4096), (4096, 4096)], sha.as_str(), 2)
         );
         assert!(base(good.as_bytes(), &sig, &keys, &image, "nx60i").is_err());
         for bad in [
             json!({"sha256": "0".repeat(64)}),
             json!({"size": 4096}),
             json!({"file": "other.img"}),
-            json!({"pack_offset": 100}),
-            json!({"pack_offset": 8192, "pack_len": 8192}),
-            json!({"pack_len": 0}),
+            json!({"pack": [[100, 4096]]}),
+            json!({"pack": [[16384, 8192]]}),
+            json!({"pack": [[4096, 0]]}),
+            json!({"pack": []}),
+            json!({"pack": [[4096, 8192], [8192, 4096]]}),
+            json!({"pack": [[u64::MAX - 4095, 4096]]}),
+            json!({"pack_offset": 4096, "pack_len": 4096}),
             json!({"extra": 1}),
         ] {
             let text = sidecar(bad.clone());

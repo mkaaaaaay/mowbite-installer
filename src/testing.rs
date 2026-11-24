@@ -153,8 +153,7 @@ impl World {
             base: BaseImage {
                 path: PathBuf::new(),
                 sha256: String::new(),
-                pack_offset: 0,
-                pack_len: 0,
+                pack: vec![],
             },
             inputs: Inputs {
                 wifi_name: "Heim".into(),

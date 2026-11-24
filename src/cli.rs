@@ -222,8 +222,7 @@ pub async fn run<M: Mower>(
             BaseImage {
                 path: PathBuf::new(),
                 sha256: String::new(),
-                pack_offset: 0,
-                pack_len: 0,
+                pack: vec![],
             },
             Inputs {
                 wifi_name: String::new(),

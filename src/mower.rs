@@ -141,9 +141,9 @@ pub enum StartSeen {
 pub struct BaseImage {
     pub path: PathBuf,
     pub sha256: String,
-    /// Byte offset and length of the pack file inside the image, from the signed sidecar.
-    pub pack_offset: u64,
-    pub pack_len: u64,
+    /// Where the pack file lies in the image, from the signed sidecar: (byte offset, length) of each piece in the
+    /// order of the file; ext4 may split it around the reserved blocks of a group.
+    pub pack: Vec<(u64, u64)>,
 }
 
 /// What the owner typed and what the frame loaded; the module only puts it into the pack.
