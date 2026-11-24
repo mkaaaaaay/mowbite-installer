@@ -21,7 +21,7 @@ serde_json = "1"
 sha2 = "0.10"
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 
 [dev-dependencies]
 tempfile = "3"

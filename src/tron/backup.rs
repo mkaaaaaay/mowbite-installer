@@ -161,6 +161,9 @@ pub async fn backup<D: Disk>(
             store.discard_unfinished(&name)?;
             let mut file = store.create_new(&name)?;
             let mut packed = zstd::Encoder::new(ToFile(&mut file), 3)?;
+            // Packing on one core is slower than USB reads.
+            packed
+                .multithread(std::thread::available_parallelism().map_or(1, |n| n.get() as u32))?;
             let sum = read_area(disk, area, cancel, &mut done, &mut |b| {
                 Ok(packed.write_all(b)?)
             })
