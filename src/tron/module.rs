@@ -18,6 +18,8 @@ const META_MAX_BYTES: u64 = 256 << 20;
 const BACKUP_BYTES: u64 = 25_000_000_000;
 /// The unpacked vendor rootfs (16 GiB partition) for the checks plus the new rootfs image.
 const WORK_BYTES: u64 = 2 * 17_179_869_184;
+/// Room in the pack for the vendor parts and the small files: 25.4 MB measured on ours, with room.
+const VENDOR_ROOM: u64 = 64 << 20;
 
 pub struct Tron<P> {
     pub port: P,
@@ -162,6 +164,29 @@ impl<P: Port> Mower for Tron<P> {
         }
     }
 
+    fn check_wifi(&self, name: &str, key: &str) -> Result<()> {
+        ensure!(
+            (1..=32).contains(&name.len()),
+            "a Wi-Fi name has 1 to 32 bytes"
+        );
+        contents::psk(key).map(|_| ())
+    }
+
+    fn check_inputs(&self, base: &BaseImage, inputs: &Inputs) -> Result<()> {
+        let mut bundles = 0u64;
+        for path in &inputs.bundles {
+            bundles += std::fs::metadata(path)?.len();
+        }
+        let room = image::room(base);
+        ensure!(
+            bundles.saturating_add(VENDOR_ROOM) <= room,
+            "the bundles take {} MB, the pack of this base system holds {} MB with the vendor parts",
+            bundles >> 20,
+            room.saturating_sub(VENDOR_ROOM) >> 20
+        );
+        Ok(())
+    }
+
     async fn detect(&self) -> Result<Option<Found>> {
         self.port.find().await
     }
@@ -222,8 +247,11 @@ impl<P: Port> Mower for Tron<P> {
         // A backup finished in an earlier run: the Tron may have started or been updated since.
         if !dev.compared {
             ctx.progress.step("tron.compare_device");
+            // A system this folder wrote differs from the backup on purpose; the boot areas still have to match.
+            let skip: &[&str] = if ctx.system_written { &["rootfs"] } else { &[] };
             if let Some(area) =
-                backup::differs_from_device(&mut dev.disk, b, ctx.cancel, ctx.progress).await?
+                backup::differs_from_device(&mut dev.disk, b, skip, ctx.cancel, ctx.progress)
+                    .await?
             {
                 return Ok(vec![Finding::Stop {
                     code: "tron.device_changed".into(),
@@ -287,14 +315,17 @@ impl<P: Port> Mower for Tron<P> {
         plan: &WritePlan,
         ctx: &mut Ctx<'_>,
     ) -> Result<()> {
-        let table = read_table(&mut dev.disk).await?;
-        let target = part(&table, &plan.partition)?;
+        let table = read_table(&mut dev.disk).await.context(NothingWritten)?;
+        let target = part(&table, &plan.partition).context(NothingWritten)?;
         ensure!(
             target.first_sector == plan.first_sector && sectors(target) == plan.partition_sectors,
-            "tron.table_changed: {} is not where the plan writes",
-            plan.partition
+            anyhow!(
+                "tron.table_changed: {} is not where the plan writes",
+                plan.partition
+            )
+            .context(NothingWritten)
         );
-        let mut src = File::open(&plan.image)?;
+        let mut src = File::open(&plan.image).context(NothingWritten)?;
         let disk =
             image::write_and_verify(dev.disk, &mut src, plan, ctx.cancel, ctx.progress).await?;
         drop(src);
@@ -315,9 +346,11 @@ impl<P: Port> Mower for Tron<P> {
     }
 
     async fn back(&self, mut dev: Self::Device, b: &Backup, ctx: &mut Ctx<'_>) -> Result<()> {
-        let table = read_table(&mut dev.disk).await?;
-        back::belongs_here(&mut dev.disk, &table, b).await?;
-        let (plan, mut src) = back::plan(ctx.store, b)?;
+        let table = read_table(&mut dev.disk).await.context(NothingWritten)?;
+        back::belongs_here(&mut dev.disk, &table, b)
+            .await
+            .context(NothingWritten)?;
+        let (plan, mut src) = back::plan(ctx.store, b).context(NothingWritten)?;
         let disk =
             image::write_and_verify(dev.disk, &mut src, &plan, ctx.cancel, ctx.progress).await?;
         self.port.restart(disk).await.context(WrittenNotRestarted)
@@ -478,8 +511,9 @@ mod tests {
         let pack_head = &new[1 << 19..(1 << 19) + pack::MAGIC.len()];
         assert_eq!(pack_head, pack::MAGIC.as_bytes());
         // The Tron came back on USB instead of starting: go back to the vendor system.
+        assert!(!d.back_in_usb().await.unwrap());
         tron.port.started.set(false);
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        assert!(d.back_in_usb().await.unwrap());
         d.choose(true).unwrap();
         let next = w.until_asked(&mut d).await.unwrap();
         let now = std::fs::read(&path).unwrap();
@@ -496,6 +530,7 @@ mod tests {
             progress: &Quiet,
             cancel: &w.cancel,
             log: &Quiet,
+            system_written: false,
         }
     }
 

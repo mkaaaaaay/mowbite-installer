@@ -147,12 +147,13 @@ fn unpacked_sha256(raw: impl Read) -> Result<String> {
 pub async fn differs_from_device<D: Disk>(
     disk: &mut D,
     backup: &Backup,
+    skip: &[&str],
     cancel: &Cancel,
     progress: &dyn Progress,
 ) -> Result<Option<String>> {
     let compared: Vec<Area> = areas(&backup.table, disk.sectors())?
         .into_iter()
-        .filter(|a| a.twice && a.name != CHANGES_ON_RESTART)
+        .filter(|a| a.twice && a.name != CHANGES_ON_RESTART && !skip.contains(&a.name.as_str()))
         .collect();
     let total: u64 = compared.iter().map(|a| a.sectors * SECTOR).sum();
     let mut done_bytes = 0u64;

@@ -38,9 +38,43 @@ fn check_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Creates dir (and its parents) readable for its owner only: 0700 on Unix; on Windows without the inherited rights,
+/// with full rights for the user who runs the program.
+pub fn private_dir(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .with_context(|| format!("create {}", dir.display()))?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        let user = std::env::var("USERNAME").context("USERNAME is not set")?;
+        let status = std::process::Command::new("icacls")
+            .arg(dir)
+            .args(["/inheritance:r", "/grant:r"])
+            .arg(format!("{user}:(OI)(CI)F"))
+            .stdout(std::process::Stdio::null())
+            .status()
+            .context("icacls")?;
+        anyhow::ensure!(
+            status.success(),
+            "icacls could not limit {} to {user}",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
 impl Store {
+    /// The folder for its owner only: it holds the whole flash with keys and Wi-Fi.
     pub fn open(root: &Path) -> Result<Self> {
-        std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
+        private_dir(root)?;
         Ok(Store {
             root: root.to_path_buf(),
         })
@@ -54,9 +88,11 @@ impl Store {
     pub fn create_new(&mut self, name: &str) -> Result<NewFile> {
         check_name(name)?;
         let path = self.root.join(name);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options
             .open(&path)
             .with_context(|| format!("{} exists or cannot be created", path.display()))?;
         Ok(NewFile {
@@ -70,8 +106,11 @@ impl Store {
     /// The sha256 recorded for a finished file.
     pub fn recorded(&self, name: &str) -> Result<Option<String>> {
         let path = self.root.join(SUMS);
-        let Ok(file) = File::open(&path) else {
-            return Ok(None);
+        // Only a missing list means nothing is finished; any other failure must not look like it.
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
         };
         let mut found = None;
         for line in BufReader::new(file).lines() {
@@ -153,6 +192,40 @@ impl NewFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn only_the_owner_reads_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a/backup");
+        let mut store = Store::open(&root).unwrap();
+        store.create_new("x").unwrap().finish().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&root.join("x")), 0o600);
+    }
+
+    // A list that cannot be read is no empty list: nothing finished may be thrown away.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_list_keeps_every_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let mut f = store.create_new("boot.img").unwrap();
+        f.write(b"abc").unwrap();
+        f.finish().unwrap();
+        let sums = dir.path().join(SUMS);
+        std::fs::set_permissions(&sums, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&sums).is_ok() {
+            return; // root reads it anyway
+        }
+        assert!(store.recorded("boot.img").is_err());
+        assert!(store.discard_unfinished("boot.img").is_err());
+        assert!(dir.path().join("boot.img").exists());
+        std::fs::set_permissions(&sums, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     #[test]
     fn a_file_counts_only_when_finished() {

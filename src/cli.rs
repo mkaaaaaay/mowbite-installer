@@ -11,6 +11,7 @@ use crate::store::Store;
 use crate::text::{self, Terminal};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
+use sha2::Digest;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -83,7 +84,8 @@ pub fn tables(release: &Path, signers: &Signers, module: &str) -> Result<Tables>
     release::tables(&json, &signature(&path)?, signers, module)
 }
 
-pub fn base(release: &Path, signers: &Signers, platform: &str) -> Result<BaseImage> {
+/// The base image and its number.
+pub fn base(release: &Path, signers: &Signers, platform: &str) -> Result<(BaseImage, u32)> {
     #[derive(Deserialize)]
     struct Named {
         file: String,
@@ -92,12 +94,32 @@ pub fn base(release: &Path, signers: &Signers, platform: &str) -> Result<BaseIma
     let sidecar = std::fs::read(&path).with_context(|| path.display().to_string())?;
     let named: Named = serde_json::from_slice(&sidecar).context("base.json")?;
     let image = release_file(release, &named.file)?;
-    Ok(release::base(&sidecar, &signature(&path)?, signers, &image, platform)?.0)
+    release::base(&sidecar, &signature(&path)?, signers, &image, platform)
+}
+
+/// The base number an OS bundle needs, from its bundle.json; None when it names none.
+pub fn os_needs_base(bundle: &Path) -> Result<Option<u32>> {
+    let file = std::fs::File::open(bundle).with_context(|| bundle.display().to_string())?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if path.components().count() == 2 && path.file_name() == Some("bundle.json".as_ref()) {
+            let meta: serde_json::Value = serde_json::from_reader(&mut entry)
+                .with_context(|| format!("bundle.json of {}", bundle.display()))?;
+            return Ok(meta
+                .get("base")
+                .and_then(serde_json::Value::as_u64)
+                .map(u32::try_from)
+                .transpose()?);
+        }
+    }
+    bail!("{} has no bundle.json", bundle.display())
 }
 
 /// The bundles for the inbox, each checked against its component's key; each comes with its .sig, which the
-/// mower checks again.
-pub fn bundles(release: &Path, signers: &Signers) -> Result<Vec<PathBuf>> {
+/// mower checks again. With the sha256 of each file as checked.
+pub fn bundles(release: &Path, signers: &Signers) -> Result<(Vec<PathBuf>, Vec<String>)> {
     let mut names: Vec<String> = std::fs::read_dir(release)
         .with_context(|| release.display().to_string())?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -105,6 +127,8 @@ pub fn bundles(release: &Path, signers: &Signers) -> Result<Vec<PathBuf>> {
         .collect();
     names.sort();
     let mut out = Vec::new();
+    let mut sums = Vec::new();
+    let hex = |data: &[u8]| format!("{:x}", sha2::Sha256::digest(data));
     for component in BUNDLES {
         let prefix = format!("mowbite-{component}-");
         let found: Vec<&String> = names.iter().filter(|n| n.starts_with(&prefix)).collect();
@@ -119,12 +143,15 @@ pub fn bundles(release: &Path, signers: &Signers) -> Result<Vec<PathBuf>> {
         signers
             .verify(&data, &signature(&path)?, &format!("mowbite-{component}"))
             .with_context(|| name.to_string())?;
+        let sig_text = signature(&path)?;
         let mut sig = path.clone().into_os_string();
         sig.push(".sig");
         out.push(path);
+        sums.push(hex(&data));
         out.push(sig.into());
+        sums.push(hex(sig_text.as_bytes()));
     }
-    Ok(out)
+    Ok((out, sums))
 }
 
 fn random(len: usize) -> Result<String> {
@@ -142,15 +169,30 @@ fn random(len: usize) -> Result<String> {
     Ok(out)
 }
 
-/// The mower's name and the key of its setup Wi-Fi: made once per backup folder, then read from the sheet, so a
-/// written mower and its sheet always agree.
-pub fn setup(store: &Path) -> Result<(String, Secret<String>)> {
+fn hex_id() -> Result<String> {
+    let mut id = [0u8; 16];
+    getrandom::getrandom(&mut id).map_err(|e| anyhow!("no randomness from the system: {e}"))?;
+    Ok(id.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// What the sheet beside the backup holds for one mower.
+pub struct Setup {
+    pub name: String,
+    pub key: Secret<String>,
+    /// The mower proves its answers on the network with it.
+    pub install_id: Secret<String>,
+}
+
+/// The mower's name, the key of its setup Wi-Fi and its install id: made once per backup folder, then read from the
+/// sheet, so a written mower and its sheet always agree.
+pub fn setup(store: &Path) -> Result<Setup> {
     let path = store.join(SHEET);
     if !path.exists() {
         let text = format!(
-            "MowBite setup Wi-Fi of this mower. Keep this sheet to yourself.\nname={}\nkey={}\n",
+            "MowBite setup Wi-Fi of this mower. Keep this sheet to yourself.\nname={}\nkey={}\nid={}\n",
             format_args!("mowbite-{}", random(4)?),
-            random(KEY_LEN)?
+            random(KEY_LEN)?,
+            hex_id()?
         );
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -169,23 +211,29 @@ pub fn setup(store: &Path) -> Result<(String, Secret<String>)> {
             .map(str::to_owned)
             .with_context(|| format!("{} has no {key}", path.display()))
     };
-    Ok((field("name=")?, Secret::new(field("key=")?)))
+    Ok(Setup {
+        name: field("name=")?,
+        key: Secret::new(field("key=")?),
+        install_id: Secret::new(field("id=")?),
+    })
 }
 
-/// Wi-Fi name and key of the home network; the key is not shown while typed.
-fn ask_wifi() -> Result<(String, Secret<String>)> {
+/// Wi-Fi name and key of the home network, checked by the rules of the mower; the key is not shown while typed.
+fn ask_wifi<M: Mower>(mower: &M) -> Result<(String, Secret<String>)> {
     loop {
         print!("Name of your Wi-Fi: ");
         std::io::stdout().flush()?;
         let mut name = String::new();
-        std::io::stdin().read_line(&mut name)?;
+        ensure!(
+            std::io::stdin().read_line(&mut name)? > 0,
+            "no input: the Wi-Fi is needed"
+        );
         let name = name.trim_end_matches(['\r', '\n']).to_owned();
         let key = Secret::new(rpassword::prompt_password("Wi-Fi key (not shown): ")?);
-        let len = key.expose().len();
-        if !name.is_empty() && name.len() <= 32 && (8..=63).contains(&len) {
-            return Ok((name, key));
+        match mower.check_wifi(&name, key.expose()) {
+            Ok(()) => return Ok((name, key)),
+            Err(e) => println!("{e:#}. Please again."),
         }
-        println!("A Wi-Fi name has 1 to 32 characters, a key 8 to 63. Please again.");
     }
 }
 
@@ -197,24 +245,51 @@ pub async fn run<M: Mower>(
     tables: &Tables,
 ) -> Result<bool> {
     let mut store = Store::open(&args.store)?;
+    crate::store::private_dir(&args.work)?;
+    let space = mower.space_needed();
+    if args.goal == Goal::Install {
+        crate::space::check(
+            &args.store,
+            space.backup_bytes,
+            &args.work,
+            space.work_bytes,
+        )?;
+    }
+    println!(
+        "The backup in {} holds the whole flash of the mower with its keys and Wi-Fi: keep it to yourself, \
+         do not share it.",
+        args.store.display()
+    );
     let (base, inputs) = match args.goal {
         Goal::Install => {
-            let base = base(&args.release, signers, mower.id())?;
-            let bundles = bundles(&args.release, signers)?;
-            let (device_name, setup_wifi_key) = setup(&args.store)?;
+            let (base, base_number) = base(&args.release, signers, mower.id())?;
+            let (bundles, bundle_sha256) = bundles(&args.release, signers)?;
+            if let Some(os) = bundles.first() {
+                if let Some(needs) = os_needs_base(os)? {
+                    ensure!(
+                        base_number >= needs,
+                        "the OS bundle needs base system {needs}, the release folder has {base_number}"
+                    );
+                }
+            }
+            let setup = setup(&args.store)?;
             println!(
-                "The mower will be called {device_name}. Should it not find your Wi-Fi, it opens its own; its \
-                 name and key are in {}.",
+                "The mower will be called {}. Should it not find your Wi-Fi, it opens its own; its name and key \
+                 are in {}.",
+                setup.name,
                 args.store.join(SHEET).display()
             );
-            let (wifi_name, wifi_key) = ask_wifi()?;
+            let (wifi_name, wifi_key) = ask_wifi(mower)?;
             let inputs = Inputs {
                 wifi_name,
                 wifi_key,
-                device_name,
-                setup_wifi_key,
+                device_name: setup.name,
+                setup_wifi_key: setup.key,
+                install_id: setup.install_id,
                 bundles,
+                bundle_sha256,
             };
+            mower.check_inputs(&base, &inputs)?;
             (base, inputs)
         }
         // The way back writes the backup only; base and inputs are never used on it.
@@ -229,14 +304,19 @@ pub async fn run<M: Mower>(
                 wifi_key: Secret::new(String::new()),
                 device_name: String::new(),
                 setup_wifi_key: Secret::new(String::new()),
+                install_id: Secret::new(String::new()),
                 bundles: Vec::new(),
+                bundle_sha256: Vec::new(),
             },
         ),
     };
     let work = WorkDir {
         path: args.work.clone(),
     };
-    let first = Confirm::new(&inputs.device_name);
+    let first = Confirm::new(
+        &inputs.device_name,
+        Secret::new(inputs.install_id.expose().clone()),
+    );
     text::run(
         mower,
         &mut store,
@@ -292,15 +372,64 @@ mod tests {
         }
     }
 
+    fn bundle_with(dir: &Path, meta: &str) -> PathBuf {
+        let path = dir.join("mowbite-os-abc.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        for (name, data) in [("abc/install/x", "1"), ("abc/bundle.json", meta)] {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, data.as_bytes()).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn the_base_an_os_bundle_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = bundle_with(dir.path(), r#"{"component": "os", "base": 2}"#);
+        assert_eq!(os_needs_base(&path).unwrap(), Some(2));
+        let path = bundle_with(dir.path(), r#"{"component": "os"}"#);
+        assert_eq!(os_needs_base(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn a_bundle_changed_after_its_check_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b");
+        std::fs::write(&path, b"signed").unwrap();
+        let mut inputs = crate::testing::World::new().inputs;
+        inputs.bundles = vec![path.clone()];
+        inputs.bundle_sha256 = vec![format!("{:x}", sha2::Sha256::digest(b"signed"))];
+        assert!(inputs.unchanged().is_ok());
+        std::fs::write(&path, b"swapped").unwrap();
+        assert!(inputs.unchanged().is_err());
+    }
+
     #[test]
     fn the_sheet_is_made_once_and_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let (name, key) = setup(dir.path()).unwrap();
+        let Setup {
+            name,
+            key,
+            install_id,
+        } = setup(dir.path()).unwrap();
         assert!(name.starts_with("mowbite-") && name.len() == 12);
         assert_eq!(key.expose().len(), KEY_LEN);
         assert!(key.expose().bytes().all(|b| ALPHABET.contains(&b)));
-        let (again, key_again) = setup(dir.path()).unwrap();
-        assert_eq!((again, key_again.expose()), (name, key.expose()));
+        let id = install_id.expose();
+        assert!(id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+        let again = setup(dir.path()).unwrap();
+        assert_eq!(
+            (again.name, again.key.expose(), again.install_id.expose()),
+            (name, key.expose(), id)
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -311,7 +440,7 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         let other = tempfile::tempdir().unwrap();
-        assert_ne!(setup(other.path()).unwrap().1.expose(), key.expose());
+        assert_ne!(setup(other.path()).unwrap().key.expose(), key.expose());
     }
 
     #[cfg(unix)]
@@ -340,7 +469,8 @@ mod tests {
             "mowbite namespaces=\"mowbite-os,mowbite-planner,mowbite-app\" {public}\n"
         ))
         .unwrap();
-        let found = bundles(&release, &signers).unwrap();
+        let (found, sums) = bundles(&release, &signers).unwrap();
+        assert_eq!(sums.len(), found.len());
         let names: Vec<_> = found
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap())

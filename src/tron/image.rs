@@ -3,8 +3,8 @@
 
 use super::pack;
 use crate::disk::{Bounded, Disk, SECTOR, Window};
-use crate::mower::{BaseImage, Cancel, Progress, WritePlan};
-use anyhow::{Context, Result, bail, ensure};
+use crate::mower::{BaseImage, Cancel, NothingWritten, Progress, WritePlan};
+use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -109,12 +109,15 @@ pub async fn write_and_verify<D: Disk>(
     cancel: &Cancel,
     progress: &dyn Progress,
 ) -> Result<D> {
-    ensure!(plan.fits(), "the image does not fit the partition");
+    ensure!(
+        plan.fits(),
+        anyhow::anyhow!("the image does not fit the partition").context(NothingWritten)
+    );
     let window = Window {
         first: plan.first_sector,
         sectors: plan.partition_sectors,
     };
-    let mut disk = Bounded::new(disk, window)?;
+    let mut disk = Bounded::new(disk, window).context(NothingWritten)?;
     let total = plan.sectors * SECTOR * 2;
     let mut buf = vec![0u8; COPY];
     let mut at = 0u64;
@@ -123,11 +126,18 @@ pub async fn write_and_verify<D: Disk>(
     while at < plan.sectors {
         // Cancel counts only before the first block; after it the frame offers back or go on.
         if at == 0 && cancel.is_set() {
-            bail!("cancelled");
+            return Err(anyhow::anyhow!("cancelled").context(NothingWritten));
         }
         let n = (COPY as u64 / SECTOR).min(plan.sectors - at);
         let piece = &mut buf[..(n * SECTOR) as usize];
-        src.read_exact(piece)?;
+        if let Err(e) = src.read_exact(piece) {
+            let e = anyhow::Error::from(e);
+            return Err(if at == 0 {
+                e.context(NothingWritten)
+            } else {
+                e
+            });
+        }
         written.update(&*piece);
         disk.write(plan.first_sector + at, piece).await?;
         at += n;

@@ -8,6 +8,7 @@ use crate::secret::Secret;
 use crate::store::Store;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -54,6 +55,8 @@ pub struct Ctx<'a> {
     pub progress: &'a dyn Progress,
     pub cancel: &'a Cancel,
     pub log: &'a dyn Log,
+    /// This backup folder wrote the system partition of the device: it differs from the backup on purpose.
+    pub system_written: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +133,17 @@ impl WritePlan {
     }
 }
 
+/// Context of the error of write() or back() when it failed before the first block went to the device: the system
+/// on the mower is as it was.
+#[derive(Debug)]
+pub struct NothingWritten;
+
+impl std::fmt::Display for NothingWritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nothing was written")
+    }
+}
+
 /// Context of the error of write() or back() when the image was written and read back and only the restart
 /// failed: the system is complete, the owner switches the mower off and on instead of writing again.
 #[derive(Debug)]
@@ -163,8 +177,33 @@ pub struct Inputs {
     pub wifi_key: Secret<String>,
     pub device_name: String,
     pub setup_wifi_key: Secret<String>,
+    /// 32 hex digits from the sheet: the mower proves its answers on the network with it.
+    pub install_id: Secret<String>,
     /// Signed bundles (os, app, planner) for the inbox.
     pub bundles: Vec<PathBuf>,
+    /// sha256 of each bundle when its signature was checked.
+    pub bundle_sha256: Vec<String>,
+}
+
+impl Inputs {
+    /// The bundles are still the bytes whose signatures were checked at the start.
+    pub fn unchanged(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.bundles.len() == self.bundle_sha256.len(),
+            "bundles without their sha256"
+        );
+        for (path, want) in self.bundles.iter().zip(&self.bundle_sha256) {
+            let mut file = std::fs::File::open(path)?;
+            let mut hash = sha2::Sha256::new();
+            std::io::copy(&mut file, &mut hash)?;
+            anyhow::ensure!(
+                format!("{:x}", hash.finalize()) == *want,
+                "{} changed since its signature was checked",
+                path.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 pub struct Space {
@@ -188,6 +227,14 @@ pub trait Mower {
     /// (key, de, en)
     fn texts(&self) -> &'static [(&'static str, &'static str, &'static str)];
     fn space_needed(&self) -> Space;
+    /// Name and key of the home Wi-Fi by the rules of this mower, checked while the owner types them.
+    fn check_wifi(&self, _name: &str, _key: &str) -> Result<()> {
+        Ok(())
+    }
+    /// Whether the inputs fit the base image (room of the pack), before anything is read from the mower.
+    fn check_inputs(&self, _base: &BaseImage, _inputs: &Inputs) -> Result<()> {
+        Ok(())
+    }
 
     async fn detect(&self) -> Result<Option<Found>>;
     /// Makes the device readable (the Tron loads its loader into RAM) and reads who it is.

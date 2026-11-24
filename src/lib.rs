@@ -9,6 +9,7 @@ pub mod release;
 pub mod run;
 pub mod secret;
 pub mod sign;
+pub mod space;
 pub mod store;
 #[cfg(test)]
 mod testing;

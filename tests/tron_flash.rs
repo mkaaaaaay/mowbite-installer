@@ -70,6 +70,7 @@ async fn a_saved_tron_flash_backs_up_and_passes() {
         progress: &print,
         cancel: &cancel,
         log: &print,
+        system_written: false,
     };
     let found = tron.port.find().await.unwrap().unwrap();
     let (mut dev, id) = tron.open(&found, &mut ctx).await.unwrap();

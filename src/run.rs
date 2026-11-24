@@ -1,19 +1,25 @@
 //! The steps of a run in their order, kept in .run.json of the backup folder after each one, so a run goes on after
-//! a crash or a closed program.
+//! a crash or a closed program. What the backup is (table, files, fingerprint) is also kept in backup.json beside
+//! the saved areas, listed in SHA256SUMS, so a lost .run.json does not lose the way back.
 //!
 //! Before the first written block a run starts again at Connect and keeps its backup (a module resumes it, never
-//! replaces it); the device has to be the same mower. From the first written block on only "write again" or "back"
-//! are offered, never a half written system.
+//! replaces it); the device has to be the same mower. From the first written block until the read back passed only
+//! "write again" or "back" are offered, whatever goal the owner starts with, never a half written system.
 
 use crate::mower::{
-    Backup, BaseImage, Ctx, Finding, Identity, Inputs, Mower, StartSeen, WritePlan,
+    Backup, BaseImage, Ctx, Finding, Identity, Inputs, Mower, NothingWritten, StartSeen, WritePlan,
+    WrittenNotRestarted,
 };
-use anyhow::{Result, bail};
+use crate::store::Store;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = ".run.json";
-const VERSION: u32 = 1;
+/// The backup described, in the store.
+pub const BACKUP_FILE: &str = "backup.json";
+/// 2: wrote and left_usb; a file of version 1 reads with both false.
+const VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Goal {
@@ -31,7 +37,7 @@ pub enum Step {
     Write,
     FirstStart,
     Done,
-    /// A check found a reason not to write; the backup stays.
+    /// A check found a reason not to write; the backup stays. A new start checks again.
     Stopped,
 }
 
@@ -45,8 +51,23 @@ pub struct Run {
     pub backup: Option<Backup>,
     pub findings: Vec<Finding>,
     pub plan: Option<WritePlan>,
-    /// Set before the first block is written.
+    /// The system on the device may be half written: set before writing, cleared once nothing was written or the
+    /// read back passed.
     pub writing: bool,
+    /// This folder wrote the device once (install or back).
+    #[serde(default)]
+    pub wrote: bool,
+    /// After the restart the mower was gone from USB once; only coming back after that is a failed start.
+    #[serde(default)]
+    pub left_usb: bool,
+}
+
+/// backup.json: who the mower is and what its backup holds.
+#[derive(Serialize, Deserialize)]
+struct Described {
+    mower: String,
+    identity: Identity,
+    backup: Backup,
 }
 
 impl Run {
@@ -61,6 +82,8 @@ impl Run {
             findings: Vec::new(),
             plan: None,
             writing: false,
+            wrote: false,
+            left_usb: false,
         }
     }
 
@@ -75,14 +98,30 @@ impl Run {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        let run: Run = serde_json::from_str(&text)?;
-        if run.version != VERSION {
+        let mut run: Run = serde_json::from_str(&text)?;
+        if run.version > VERSION {
             bail!(
-                "{} is of version {}, this program reads {VERSION}",
+                "{} is of version {}, this program reads up to {VERSION}: use a newer installer",
                 path.display(),
                 run.version
             );
         }
+        run.version = VERSION;
+        Ok(Some(run))
+    }
+
+    /// A run made again from backup.json when .run.json is gone: the backup and the mower it belongs to.
+    fn described(store_root: &Path, goal: Goal) -> Result<Option<Run>> {
+        let store = Store::open(store_root)?;
+        if store.recorded(BACKUP_FILE)?.is_none() {
+            return Ok(None);
+        }
+        store.verify(BACKUP_FILE)?;
+        let text = std::fs::read(store.path(BACKUP_FILE)?)?;
+        let d: Described = serde_json::from_slice(&text).context(BACKUP_FILE)?;
+        let mut run = Run::new(&d.mower, goal);
+        run.identity = Some(d.identity);
+        run.backup = Some(d.backup);
         Ok(Some(run))
     }
 
@@ -99,24 +138,39 @@ impl Run {
         Ok(())
     }
 
-    /// The step after a restart of the program. Another goal, or the same one after Done, starts again at Connect
-    /// with the backup kept; the owner chose the goal, so an unfinished write is not offered again.
+    /// The step after a restart of the program. A half written device gets "write again or back" whatever the goal.
+    /// Another goal, a finished or stopped run start again at Connect with the backup kept, so the checks run again.
     fn resumed(mut self, goal: Goal) -> Self {
-        if self.goal != goal || self.step == Step::Done {
+        if self.writing {
+            self.step = Step::Write;
+            return self;
+        }
+        if self.goal != goal || matches!(self.step, Step::Done | Step::Stopped) {
             self.goal = goal;
             self.step = Step::Connect;
             self.findings.clear();
-            self.plan = None;
-            self.writing = false;
+            self.discard_plan();
             return self;
         }
-        self.step = match self.step {
-            Step::Done | Step::Stopped | Step::FirstStart => self.step,
-            _ if self.writing => Step::Write,
-            _ => Step::Connect,
-        };
+        if self.step != Step::FirstStart {
+            self.step = Step::Connect;
+        }
         self
     }
+
+    /// The prepared image holds the Wi-Fi keys: gone once it is not going to be written.
+    fn discard_plan(&mut self) {
+        if let Some(plan) = self.plan.take() {
+            let _ = std::fs::remove_file(&plan.image);
+        }
+    }
+}
+
+fn bail_if_writing(run: &Run) -> Result<()> {
+    if run.writing {
+        bail!("the system on the device is not complete: write again or go back");
+    }
+    Ok(())
 }
 
 /// What the frame has to do or ask before the next step.
@@ -129,6 +183,8 @@ pub enum Next {
     Agree(Vec<Finding>),
     /// Writing began and did not finish, or the new system did not start: write again or go back.
     WriteOrBack,
+    /// Written and read back, but the restart failed: the owner switches the mower off and on.
+    SwitchOffAndOn,
     /// The mower left USB mode: the frame finds it on the network and confirms its start.
     Network,
     Stopped(Vec<Finding>),
@@ -140,12 +196,18 @@ pub struct Driver<'m, M: Mower> {
     pub run: Run,
     root: PathBuf,
     dev: Option<M::Device>,
+    /// The owner chose "write again" or "back" in this start of the program.
+    chosen: bool,
 }
 
 impl<'m, M: Mower> Driver<'m, M> {
-    /// The kept run of this backup folder, else a new one.
+    /// The kept run of this backup folder, else one made from its backup.json, else a new one.
     pub fn open(mower: &'m M, store_root: &Path, goal: Goal) -> Result<Self> {
-        let run = match Run::load(store_root)? {
+        let kept = match Run::load(store_root)? {
+            Some(run) => Some(run),
+            None => Run::described(store_root, goal)?,
+        };
+        let run = match kept {
             Some(run) if run.mower != mower.id() => bail!("this backup belongs to a {}", run.mower),
             Some(run) => run.resumed(goal),
             None => Run::new(mower.id(), goal),
@@ -155,6 +217,7 @@ impl<'m, M: Mower> Driver<'m, M> {
             run,
             root: store_root.to_path_buf(),
             dev: None,
+            chosen: false,
         };
         driver.run.save(&driver.root)?;
         Ok(driver)
@@ -163,6 +226,27 @@ impl<'m, M: Mower> Driver<'m, M> {
     fn to(&mut self, step: Step) -> Result<()> {
         self.run.step = step;
         self.run.save(&self.root)
+    }
+
+    fn describe(&self) -> Result<()> {
+        let mut store = Store::open(&self.root)?;
+        if store.recorded(BACKUP_FILE)?.is_some() {
+            return Ok(());
+        }
+        store.discard_unfinished(BACKUP_FILE)?;
+        let described = Described {
+            mower: self.run.mower.clone(),
+            identity: self
+                .run
+                .identity
+                .clone()
+                .context("the mower is known at Backup")?,
+            backup: self.run.backup.clone().context("made at Backup")?,
+        };
+        let mut file = store.create_new(BACKUP_FILE)?;
+        file.write(&serde_json::to_vec_pretty(&described)?)?;
+        file.finish()?;
+        Ok(())
     }
 
     /// Runs the current step; Next tells what the frame does before calling again.
@@ -178,6 +262,7 @@ impl<'m, M: Mower> Driver<'m, M> {
                 let dev = self.dev.as_mut().expect("opened at Connect");
                 let backup = self.mower.backup(dev, ctx).await?;
                 self.run.backup = Some(backup);
+                self.describe()?;
                 self.to(Step::Check)?;
                 Ok(Next::Go)
             }
@@ -209,6 +294,7 @@ impl<'m, M: Mower> Driver<'m, M> {
                 Ok(Next::Agree(warnings))
             }
             Step::Prepare => {
+                inputs.unchanged()?;
                 let backup = self.run.backup.as_ref().expect("made at Backup");
                 let plan = self.mower.prepare(backup, base, inputs, ctx).await?;
                 if !plan.fits() {
@@ -219,15 +305,12 @@ impl<'m, M: Mower> Driver<'m, M> {
                 Ok(Next::Go)
             }
             Step::Write => {
-                if self.run.writing {
+                if self.run.writing && !self.chosen {
                     return Ok(Next::WriteOrBack);
                 }
                 self.write(ctx).await
             }
-            Step::FirstStart => match self.mower.start_seen().await? {
-                StartSeen::UsbAgain(_) => Ok(Next::WriteOrBack),
-                StartSeen::NotSeen => Ok(Next::Network),
-            },
+            Step::FirstStart => Ok(Next::Network),
             Step::Done => Ok(Next::Done),
             Step::Stopped => Ok(Next::Stopped(self.run.findings.clone())),
         }
@@ -248,10 +331,12 @@ impl<'m, M: Mower> Driver<'m, M> {
         }
         self.run.identity = Some(identity);
         self.dev = Some(dev);
-        let next = match (self.run.goal, self.run.writing, self.run.backup.is_some()) {
-            (Goal::Back, _, _) | (_, true, _) => Step::Write,
-            (Goal::Install, false, true) => Step::Check,
-            (Goal::Install, false, false) => Step::Backup,
+        let prepared = self.run.plan.as_ref().is_some_and(|p| p.image.exists());
+        let next = match (self.run.goal, self.run.backup.is_some()) {
+            (Goal::Back, _) => Step::Write,
+            (Goal::Install, _) if self.run.writing && prepared => Step::Write,
+            (Goal::Install, true) => Step::Check,
+            (Goal::Install, false) => Step::Backup,
         };
         self.to(next)?;
         Ok(Next::Go)
@@ -264,21 +349,61 @@ impl<'m, M: Mower> Driver<'m, M> {
         };
         self.run.writing = true;
         self.run.save(&self.root)?;
-        match self.run.goal {
+        let goal = self.run.goal;
+        let result = match goal {
             Goal::Install => {
                 let plan = self.run.plan.as_ref().expect("made at Prepare");
-                self.mower.write(dev, plan, ctx).await?;
-                self.run.writing = false;
-                self.to(Step::FirstStart)?;
+                self.mower.write(dev, plan, ctx).await
             }
             Goal::Back => {
                 let backup = self.run.backup.as_ref().expect("the backup of this mower");
-                self.mower.back(dev, backup, ctx).await?;
-                self.run.writing = false;
-                self.to(Step::Done)?;
+                self.mower.back(dev, backup, ctx).await
             }
+        };
+        let after = if goal == Goal::Install {
+            Step::FirstStart
+        } else {
+            Step::Done
+        };
+        match result {
+            Ok(()) => {
+                self.written(after)?;
+                Ok(Next::Go)
+            }
+            Err(e) if e.downcast_ref::<WrittenNotRestarted>().is_some() => {
+                self.written(after)?;
+                Ok(Next::SwitchOffAndOn)
+            }
+            Err(e) if e.downcast_ref::<NothingWritten>().is_some() => {
+                self.run.writing = false;
+                self.to(Step::Connect)?;
+                Err(e)
+            }
+            Err(e) => Err(e),
         }
-        Ok(Next::Go)
+    }
+
+    fn written(&mut self, after: Step) -> Result<()> {
+        self.run.writing = false;
+        self.run.wrote = true;
+        self.run.left_usb = false;
+        self.run.plan = None;
+        self.to(after)
+    }
+
+    /// While the frame waits for the network: whether the mower came back in USB mode after it had left it (a
+    /// failed start, or the end of its trial period); then the frame offers write again or back.
+    pub async fn back_in_usb(&mut self) -> Result<bool> {
+        match self.mower.start_seen().await? {
+            StartSeen::NotSeen => {
+                if !self.run.left_usb {
+                    self.run.left_usb = true;
+                    self.run.save(&self.root)?;
+                }
+                Ok(false)
+            }
+            StartSeen::UsbAgain(_) => Ok(self.run.left_usb),
+        }
     }
 
     /// The owner agreed to the warnings.
@@ -289,13 +414,33 @@ impl<'m, M: Mower> Driver<'m, M> {
         self.to(Step::Prepare)
     }
 
-    /// After WriteOrBack: write the prepared image again, or the backed up system.
+    /// After WriteOrBack: write MowBite OS again (through Prepare, the image was removed after the read back), or
+    /// the backed up system.
     pub fn choose(&mut self, back: bool) -> Result<()> {
         if back {
             self.run.goal = Goal::Back;
         }
-        self.run.writing = false;
+        if self.run.plan.as_ref().is_some_and(|p| !p.image.exists()) {
+            self.run.plan = None;
+        }
+        self.chosen = true;
         self.to(Step::Connect)
+    }
+
+    /// After an error before writing: the device is opened again from Connect.
+    pub fn reconnect(&mut self) -> Result<()> {
+        bail_if_writing(&self.run)?;
+        self.dev = None;
+        self.to(Step::Connect)
+    }
+
+    /// The frame ends the run without writing: the prepared image goes.
+    pub fn leave(&mut self) -> Result<()> {
+        if !self.run.writing {
+            self.run.discard_plan();
+            self.run.save(&self.root)?;
+        }
+        Ok(())
     }
 
     /// The frame confirmed the first start on the network.
@@ -422,14 +567,49 @@ mod tests {
     async fn a_failed_start_offers_write_again() {
         let mut w = World::new();
         let fake = Fake::default();
-        *fake.usb_again.borrow_mut() = true;
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
-        *fake.usb_again.borrow_mut() = false;
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        // Still listed right after the restart, gone, then back: only the last counts.
+        *fake.seen.borrow_mut() = vec![true, false, true];
+        assert!(!d.back_in_usb().await.unwrap());
+        assert!(!d.back_in_usb().await.unwrap());
+        assert!(d.back_in_usb().await.unwrap());
         d.choose(false).unwrap();
         assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
         assert_eq!(fake.ran("write"), 2);
+        assert!(!d.run.left_usb);
         assert_eq!(fake.ran("backup"), 1);
+    }
+
+    // A copy without dot files or a deleted .run.json: the way back comes from backup.json.
+    #[tokio::test]
+    async fn a_lost_run_file_is_made_again_from_the_backup() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        drop(d);
+        std::fs::remove_file(Run::path(&w.root())).unwrap();
+        let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
+        assert!(d.run.backup.is_some() && d.run.identity.is_some());
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!((fake.ran("backup"), fake.ran("back")), (1, 1));
+    }
+
+    // A run file of version 1 reads; one of a newer installer does not.
+    #[test]
+    fn older_run_files_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut run = serde_json::to_value(Run::new("tron", Goal::Install)).unwrap();
+        run["version"] = 1.into();
+        run.as_object_mut().unwrap().remove("wrote");
+        run.as_object_mut().unwrap().remove("left_usb");
+        std::fs::write(Run::path(dir.path()), run.to_string()).unwrap();
+        let read = Run::load(dir.path()).unwrap().unwrap();
+        assert_eq!((read.version, read.wrote), (VERSION, false));
+        run["version"] = (VERSION + 1).into();
+        std::fs::write(Run::path(dir.path()), run.to_string()).unwrap();
+        assert!(Run::load(dir.path()).is_err());
     }
 
     #[tokio::test]
@@ -467,7 +647,10 @@ mod tests {
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
         assert!(w.until_asked(&mut d).await.is_err());
         drop(d);
+        // Half written: whatever the goal, first write again or back.
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        d.choose(true).unwrap();
         assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
         assert_eq!(fake.ran("back"), 1);
 

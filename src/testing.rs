@@ -26,6 +26,10 @@ pub struct Fake {
     pub findings: RefCell<Vec<Finding>>,
     pub fail_write: RefCell<bool>,
     pub usb_again: RefCell<bool>,
+    /// Answers of start_seen in turn (true: back in USB mode); usb_again once they are used up.
+    pub seen: RefCell<Vec<bool>>,
+    /// The error the next write or back ends with.
+    pub write_error: RefCell<Option<anyhow::Error>>,
 }
 
 impl Fake {
@@ -110,10 +114,21 @@ impl Mower for Fake {
         if *self.fail_write.borrow() {
             bail!("the cable came off");
         }
-        Ok(())
+        match self.write_error.borrow_mut().take() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
     async fn start_seen(&self) -> Result<StartSeen> {
-        Ok(if *self.usb_again.borrow() {
+        let next = {
+            let mut seen = self.seen.borrow_mut();
+            if seen.is_empty() {
+                *self.usb_again.borrow()
+            } else {
+                seen.remove(0)
+            }
+        };
+        Ok(if next {
             StartSeen::UsbAgain(Found {
                 mode: UsbMode::Loader,
                 bus_path: "1-1".into(),
@@ -124,7 +139,10 @@ impl Mower for Fake {
     }
     async fn back(&self, _: (), _: &Backup, _: &mut Ctx<'_>) -> Result<()> {
         self.calls.borrow_mut().push("back");
-        Ok(())
+        match self.write_error.borrow_mut().take() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
@@ -160,7 +178,9 @@ impl World {
                 wifi_key: Secret::new("geheim123".into()),
                 device_name: "mowbite-ab12".into(),
                 setup_wifi_key: Secret::new("x".into()),
+                install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),
                 bundles: vec![],
+                bundle_sha256: vec![],
             },
         }
     }
@@ -177,6 +197,7 @@ impl World {
             progress: &Quiet,
             cancel: &self.cancel,
             log: &Quiet,
+            system_written: false,
         };
         driver.step(&mut ctx, &self.base, &self.inputs).await
     }

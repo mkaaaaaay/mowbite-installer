@@ -86,11 +86,12 @@ pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Resul
         (0, 0),
         hostname(&inputs.device_name)?.as_bytes(),
     )?;
-    // The host answers the first-start check with it, so the PC knows it reached this Tron.
-    let mut id = [0u8; 16];
-    getrandom::getrandom(&mut id)
-        .map_err(|e| anyhow::anyhow!("no random numbers from the system: {e}"))?;
-    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    // The host proves its first-start answers with it, so the PC knows it reached this Tron.
+    let id = inputs.install_id.expose();
+    ensure!(
+        id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+        "the install id has 32 hex digits"
+    );
     a.file(INSTALL_ID, 0o600, (0, 0), format!("{id}\n").as_bytes())?;
     let tag = &format!("{:x}", Sha256::digest(inputs.wifi_name.as_bytes()))[..8];
     let id = format!("mowbite-wifi-{tag}");
@@ -132,7 +133,9 @@ mod tests {
             wifi_key: Secret::new("ge heim\\123".into()),
             device_name: "mowbite-ab12".into(),
             setup_wifi_key: Secret::new("setup-key-1".into()),
+            install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),
             bundles: vec![bundle],
+            bundle_sha256: vec![],
         }
     }
 

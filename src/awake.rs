@@ -19,12 +19,24 @@ impl Awake {
                 "--mode=block",
             ])
             .arg(format!("--why={why}"))
-            .args(["sleep", "infinity"])
+            // Ends with this process, also when it is killed.
+            .args([
+                "tail",
+                &format!("--pid={}", std::process::id()),
+                "-f",
+                "/dev/null",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        Ok(Awake { child })
+        let mut awake = Awake { child };
+        // logind refusing the lock ends systemd-inhibit at once.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if let Some(status) = awake.child.try_wait()? {
+            anyhow::bail!("systemd-inhibit ended: {status}");
+        }
+        Ok(awake)
     }
 
     #[cfg(windows)]
