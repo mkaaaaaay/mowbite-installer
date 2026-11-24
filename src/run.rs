@@ -347,6 +347,7 @@ impl<'m, M: Mower> Driver<'m, M> {
             self.to(Step::Connect)?;
             return Ok(Next::Connect);
         };
+        let was_writing = self.run.writing;
         self.run.writing = true;
         self.run.save(&self.root)?;
         let goal = self.run.goal;
@@ -375,7 +376,7 @@ impl<'m, M: Mower> Driver<'m, M> {
                 Ok(Next::SwitchOffAndOn)
             }
             Err(e) if e.downcast_ref::<NothingWritten>().is_some() => {
-                self.run.writing = false;
+                self.run.writing = was_writing;
                 self.to(Step::Connect)?;
                 Err(e)
             }
@@ -561,6 +562,28 @@ mod tests {
         assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
         assert_eq!(fake.ran("back"), 1);
         assert_eq!(fake.ran("write"), 1);
+    }
+
+    // Nothing written in a second attempt leaves the first one half written.
+    #[tokio::test]
+    async fn nothing_written_again_keeps_a_half_written_device() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        *fake.fail_write.borrow_mut() = true;
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert!(w.until_asked(&mut d).await.is_err());
+        *fake.fail_write.borrow_mut() = false;
+        drop(d);
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        d.choose(false).unwrap();
+        *fake.write_error.borrow_mut() = Some(anyhow::anyhow!("cancelled").context(NothingWritten));
+        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(d.run.writing);
+        drop(d);
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        assert_eq!(fake.ran("write"), 2);
     }
 
     #[tokio::test]
