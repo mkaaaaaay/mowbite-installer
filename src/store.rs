@@ -111,6 +111,18 @@ impl Store {
         Ok(())
     }
 
+    /// Removes a file left unfinished by an abort, so create_new can start it again; a finished one stays.
+    pub fn discard_unfinished(&mut self, name: &str) -> Result<()> {
+        check_name(name)?;
+        if self.recorded(name)?.is_some() {
+            bail!("{name} is finished and stays");
+        }
+        match std::fs::remove_file(self.root.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
     pub fn path(&self, name: &str) -> Result<PathBuf> {
         check_name(name)?;
         Ok(self.root.join(name))
@@ -186,5 +198,23 @@ mod tests {
         for bad in ["../x", "a/b", "", ".hidden", SUMS, "a b"] {
             assert!(store.create_new(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn only_an_unfinished_file_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let mut half = store.create_new("a.img").unwrap();
+        half.write(b"abc").unwrap();
+        drop(half);
+        assert!(store.create_new("a.img").is_err());
+        store.discard_unfinished("a.img").unwrap();
+        store.discard_unfinished("a.img").unwrap();
+        let mut whole = store.create_new("a.img").unwrap();
+        whole.write(b"abc").unwrap();
+        whole.finish().unwrap();
+        assert!(store.discard_unfinished("a.img").is_err());
+        store.verify("a.img").unwrap();
+        assert!(store.discard_unfinished("../x").is_err());
     }
 }

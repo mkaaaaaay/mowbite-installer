@@ -103,7 +103,7 @@ pub struct Backup {
 }
 
 /// Stop ends the run before anything is written; Warn needs the owner to agree. code is also the text key.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Finding {
     Stop { code: String, details: String },
     Warn { code: String, details: String },

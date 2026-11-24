@@ -2,6 +2,7 @@
 
 pub mod disk;
 pub mod mower;
+pub mod run;
 pub mod secret;
 pub mod sign;
 pub mod store;
