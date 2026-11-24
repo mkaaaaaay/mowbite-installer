@@ -8,4 +8,6 @@ pub mod gpt;
 pub mod image;
 pub mod pack;
 pub mod rootfs;
+pub mod tables;
+pub mod texts;
 pub mod usb;

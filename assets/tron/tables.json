@@ -1,0 +1,27 @@
+{
+  "partition_tables": [
+    [
+      { "name": "uboot", "first_sector": 16384, "last_sector": 24575 },
+      { "name": "misc", "first_sector": 24576, "last_sector": 32767 },
+      { "name": "boot", "first_sector": 32768, "last_sector": 557055 },
+      { "name": "recovery", "first_sector": 557056, "last_sector": 1081343 },
+      { "name": "backup", "first_sector": 1081344, "last_sector": 13664255 },
+      { "name": "rootfs", "first_sector": 13664256, "last_sector": 47218687 },
+      { "name": "oem", "first_sector": 47218688, "last_sector": 114327551 },
+      { "name": "userdata", "first_sector": 114327552, "last_sector": 114589695 }
+    ]
+  ],
+  "required": [
+    "/usr/lib/modules/5.10.209",
+    "/usr/lib/kernel/driver",
+    "/vendor/etc/firmware",
+    "/usr/metoak/metoak/mo_asicrw"
+  ],
+  "optional": [
+    "/etc/iqfiles",
+    "/usr/lib/librkaiq.so",
+    "/usr/lib/aarch64-linux-gnu/librga.so",
+    "/usr/lib/aarch64-linux-gnu/librga.so.2",
+    "/usr/lib/aarch64-linux-gnu/librga.so.2.1.0"
+  ]
+}
