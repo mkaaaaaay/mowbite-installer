@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 getrandom = "0.2"
+ext4-view = "=1.0.0"
 mdns-sd = "0.13"
 rpassword = "7"
 rumqttc = { version = "0.24", default-features = false }
