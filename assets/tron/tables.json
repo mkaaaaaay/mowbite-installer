@@ -24,5 +24,9 @@
     "/usr/lib/aarch64-linux-gnu/librga.so.2",
     "/usr/lib/aarch64-linux-gnu/librga.so.2.1.0"
   ],
-  "vendor_versions": ["v1.1.1", "v1.3.32-tron.rc.8"]
+  "vendor_versions": ["v1.1.1", "v1.3.32-tron.rc.8"],
+  "loader": {
+    "file": "rk3588_loader_v1.24.114.bin",
+    "sha256": "4d1ccfbddfb7810cfad8207727ef509ac9b18e5b07191ccec9c29ec8f1f3f5e2"
+  }
 }

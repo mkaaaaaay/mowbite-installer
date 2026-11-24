@@ -3,7 +3,8 @@
 use super::usb::{self, TronUsb};
 use crate::disk::{Disk, FileDisk};
 use crate::mower::{Found, UsbMode};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 const VENDOR: u16 = 0x2207;
@@ -16,7 +17,8 @@ pub trait Port {
     /// A Tron on the port; nothing is sent to it.
     async fn find(&self) -> Result<Option<Found>>;
     /// Makes the flash readable (in maskrom the loader goes into RAM, the flash stays as it is) and opens it.
-    async fn open(&self, found: &Found) -> Result<Self::Disk>;
+    /// `loader_sha256` comes from the signed tables.
+    async fn open(&self, found: &Found, loader_sha256: &str) -> Result<Self::Disk>;
     /// Restarts into the system on the flash; the disk is used up.
     async fn restart(&self, disk: Self::Disk) -> Result<()>;
 }
@@ -69,10 +71,14 @@ impl Port for UsbPort {
         }
     }
 
-    async fn open(&self, found: &Found) -> Result<TronUsb> {
+    async fn open(&self, found: &Found, loader_sha256: &str) -> Result<TronUsb> {
         match found.mode {
             UsbMode::Loader => {}
             UsbMode::Maskrom => {
+                ensure!(
+                    format!("{:x}", Sha256::digest(self.loader)) == loader_sha256,
+                    "the loader is not the one the tables name"
+                );
                 usb::load_loader(self.info(found).await?, self.loader).await?;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
@@ -106,7 +112,7 @@ impl Port for FilePort {
         }))
     }
 
-    async fn open(&self, _: &Found) -> Result<FileDisk> {
+    async fn open(&self, _: &Found, _: &str) -> Result<FileDisk> {
         if self.read_only {
             FileDisk::open_read_only(&self.path, vec![])
         } else {

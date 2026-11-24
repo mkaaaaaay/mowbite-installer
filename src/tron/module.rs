@@ -114,8 +114,9 @@ impl<P: Port> Mower for Tron<P> {
         self.port.find().await
     }
 
-    async fn open(&self, found: &Found, _: &mut Ctx<'_>) -> Result<(Self::Device, Identity)> {
-        let mut disk = self.port.open(found).await?;
+    async fn open(&self, found: &Found, ctx: &mut Ctx<'_>) -> Result<(Self::Device, Identity)> {
+        let loader = tables::loader(&ctx.tables.raw)?;
+        let mut disk = self.port.open(found, &loader.sha256).await?;
         let table = read_table(&mut disk).await?;
         let serial = serial(&mut disk, &table).await?;
         let identity = Identity {
@@ -316,7 +317,7 @@ mod tests {
             .map(|(n, a, b)| format!(r#"{{"name":"{n}","first_sector":{a},"last_sector":{b}}}"#))
             .collect();
         let section = format!(
-            r#"{{"partition_tables":[[{}]],"required":["/usr/lib/modules/5.10.209"],"optional":["/etc/iqfiles"],"vendor_versions":["v1.1.1"]}}"#,
+            r#"{{"partition_tables":[[{}]],"required":["/usr/lib/modules/5.10.209"],"optional":["/etc/iqfiles"],"vendor_versions":["v1.1.1"],"loader":{{"file":"l.bin","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}"#,
             table.join(",")
         );
         (path, section.into_bytes())
@@ -400,7 +401,7 @@ mod tests {
             started: Default::default(),
         };
         let found = port.find().await.unwrap().unwrap();
-        let mut dev = port.open(&found).await.unwrap();
+        let mut dev = port.open(&found, "").await.unwrap();
         let table = read_table(&mut dev).await.unwrap();
         let e = serial(&mut dev, &table).await.unwrap_err();
         assert!(format!("{e:#}").starts_with(NO_SERIAL), "{e:#}");
