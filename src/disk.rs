@@ -105,11 +105,21 @@ pub struct FileDisk {
     sectors: u64,
     faults: Vec<Fault>,
     calls: u64,
+    writable: bool,
 }
 
 impl FileDisk {
     pub fn open(path: &Path, faults: Vec<Fault>) -> Result<Self> {
-        let file = File::options().read(true).write(true).open(path)?;
+        Self::opened(path, faults, true)
+    }
+
+    /// For an original image that must never change: the file is opened for reading only and every write fails.
+    pub fn open_read_only(path: &Path, faults: Vec<Fault>) -> Result<Self> {
+        Self::opened(path, faults, false)
+    }
+
+    fn opened(path: &Path, faults: Vec<Fault>, writable: bool) -> Result<Self> {
+        let file = File::options().read(true).write(writable).open(path)?;
         let len = file.metadata()?.len();
         ensure!(
             len % SECTOR == 0,
@@ -121,6 +131,7 @@ impl FileDisk {
             sectors: len / SECTOR,
             faults,
             calls: 0,
+            writable,
         })
     }
 
@@ -168,6 +179,7 @@ impl Disk for FileDisk {
     }
 
     async fn write(&mut self, first: u64, buf: &[u8]) -> Result<()> {
+        ensure!(self.writable, "the disk is open for reading only");
         let sectors = count(buf.len())?;
         self.call(first, sectors)?;
         self.file.write_all(buf)?;
@@ -260,5 +272,16 @@ mod tests {
         d.read(0, &mut sectors(1, 0)).await.unwrap();
         assert!(d.read(0, &mut sectors(1, 0)).await.is_err());
         assert!(d.write(0, &sectors(1, 0)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_read_only_disk_never_writes() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(4 * SECTOR).unwrap();
+        let mut d = FileDisk::open_read_only(file.path(), vec![]).unwrap();
+        assert!(d.write(0, &sectors(1, 9)).await.is_err());
+        let mut back = sectors(4, 1);
+        d.read(0, &mut back).await.unwrap();
+        assert!(back.iter().all(|b| *b == 0));
     }
 }
