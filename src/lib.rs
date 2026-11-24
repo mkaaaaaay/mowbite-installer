@@ -3,4 +3,5 @@
 pub mod disk;
 pub mod mower;
 pub mod secret;
+pub mod sign;
 pub mod store;
