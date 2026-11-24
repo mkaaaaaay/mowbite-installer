@@ -1,5 +1,6 @@
 //! The Airseekers Tron: rootfs only, over USB in maskrom mode with the loader in RAM.
 
+pub mod backup;
 pub mod checks;
 pub mod fit;
 pub mod gpt;
