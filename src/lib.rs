@@ -7,3 +7,6 @@ pub mod run;
 pub mod secret;
 pub mod sign;
 pub mod store;
+#[cfg(test)]
+mod testing;
+pub mod text;
