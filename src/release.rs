@@ -33,6 +33,22 @@ pub fn tables(json: &[u8], sig: &str, signers: &Signers, module: &str) -> Result
     })
 }
 
+/// Largest loader the installer takes; the one of the Tron has about 450 KiB.
+const MAX_LOADER: usize = 4 << 20;
+
+/// A loader of the SoC vendor from the release, signed like the tables; the module checks its sha256 against them.
+pub fn loader(bytes: &[u8], sig: &str, signers: &Signers) -> Result<Vec<u8>> {
+    ensure!(
+        bytes.len() <= MAX_LOADER,
+        "the loader has {} bytes, too many for a loader",
+        bytes.len()
+    );
+    signers
+        .verify(bytes, sig, "mowbite-tables")
+        .context("loader")?;
+    Ok(bytes.to_vec())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Sidecar {
@@ -189,5 +205,19 @@ mod tests {
         }
         std::fs::write(&image, vec![8u8; 3 * 4096]).unwrap();
         assert!(base(good.as_bytes(), &sig, &keys, &image, "tron").is_err());
+    }
+
+    #[test]
+    fn a_loader_has_to_be_signed_and_small() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = vec![1u8; 1000];
+        let Some((public, sig)) = signed(dir.path(), "k", &bytes, "mowbite-tables") else {
+            return;
+        };
+        let keys = signers(&public);
+        assert_eq!(loader(&bytes, &sig, &keys).unwrap(), bytes);
+        assert!(loader(&[2u8; 1000], &sig, &keys).is_err());
+        let big = vec![0u8; MAX_LOADER + 1];
+        assert!(loader(&big, &sig, &keys).is_err());
     }
 }
