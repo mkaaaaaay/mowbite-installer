@@ -1,4 +1,4 @@
-# MowBite Installer
+# MowBite OS installer for the Airseekers Tron
 
 <img src="docs/logo.svg" alt="MowBite logo" width="96" align="right">
 
