@@ -99,8 +99,23 @@ impl TronUsb {
     }
 }
 
+/// Restarts a device in the loader mode of U-Boot into maskrom mode. Writes no flash.
+pub async fn reboot_maskrom(info: nusb::DeviceInfo) -> Result<()> {
+    let mut dev = rockusb::nusb::Device::from_usb_device_info(info)
+        .await
+        .map_err(|e| anyhow!("open the USB device: {e:?}"))?;
+    let mut broken = false;
+    limited(
+        &mut broken,
+        "restart into maskrom",
+        dev.reset_device(ResetOpcode::Maskrom),
+    )
+    .await
+}
+
 /// Puts the loader from a Rockchip boot file into RAM of a device in maskrom mode: first the 0x471 blobs (memory
 /// setup), then the 0x472 blobs (USB protocol), each followed by the delay the file asks for. Writes no flash.
+/// Nothing else is sent before: the boot ROM takes no loader once it got other requests.
 pub async fn load_loader(info: nusb::DeviceInfo, boot_file: &[u8]) -> Result<()> {
     let head: &RkBootHeaderBytes = boot_file
         .get(..102)

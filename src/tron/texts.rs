@@ -2,9 +2,17 @@
 
 pub const TEXTS: &[(&str, &str, &str)] = &[
     (
-        "tron.usb_not_supported",
-        "Diese Version des Installers kann eine Tron noch nicht über USB öffnen. Eine spätere Version kann es.",
-        "This version of the installer cannot open a Tron over USB yet. A later version will.",
+        "tron.usb_mode_unknown",
+        "Die Tron meldet sich in einem USB-Modus, den der Installer nicht kennt. Er hat ihr nichts gesendet.",
+        "The Tron reports a USB mode the installer does not know. It sent nothing to it.",
+    ),
+    (
+        "tron.loader_not_started",
+        "Der Loader ist auf der Tron nicht gestartet. Den Akku der Tron ab- und wieder anstecken, andere \
+         USB-Werkzeuge schließen, die Tron neu in den USB-Modus bringen und den Installer erneut starten. Auf \
+         die Tron wurde nichts geschrieben.",
+        "The loader did not start on the Tron. Take the battery off and put it back, close other USB tools, bring \
+         the Tron into USB mode again and start the installer again. Nothing was written to the Tron.",
     ),
     (
         "tron.usb_driver_declined",

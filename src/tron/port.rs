@@ -6,6 +6,7 @@ use crate::mower::{Found, UsbMode};
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const VENDOR: u16 = 0x2207;
 /// RK3588 in maskrom and in loader mode.
@@ -33,11 +34,53 @@ fn bus_path(info: &nusb::DeviceInfo) -> String {
     format!("{}-{}", info.bus_id(), chain.join("."))
 }
 
-const NOT_SUPPORTED: &str = "tron.usb_not_supported";
+const MODE_UNKNOWN: &str = "tron.usb_mode_unknown";
+const LOADER_NOT_STARTED: &str = "tron.loader_not_started";
+/// How long the Tron may take to come back on USB in its next mode.
+const NEXT_MODE: Duration = Duration::from_secs(20);
 
-/// Maskrom and loader look the same until the USB descriptors of both are measured on a Tron.
-fn mode(_info: &nusb::DeviceInfo) -> UsbMode {
-    UsbMode::Unknown
+/// The USB modes of a Tron, told apart by what the system already knows about the device. Nothing is asked of the
+/// device for it: the boot ROM takes no loader any more once it got other requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seen {
+    /// The boot ROM of the chip; it only takes the loader.
+    Maskrom,
+    /// The loader this installer puts into RAM; it reads and writes the whole flash.
+    Plug,
+    /// The loader mode of U-Boot. It answers reads past the first 32 MiB with fill bytes and no error, so the flash
+    /// is never read through it.
+    UBoot,
+    Unknown,
+}
+
+/// Values measured on a Tron: maskrom and the loader in RAM differ in the product string only.
+fn seen(usb_version: u16, device_version: u16, product: Option<&str>) -> Seen {
+    match (
+        usb_version,
+        device_version,
+        product.filter(|p| !p.is_empty()),
+    ) {
+        (0x0200, 0x0100, None) => Seen::Maskrom,
+        (0x0200, 0x0100, Some("USB-MSC")) => Seen::Plug,
+        (0x0201, _, Some("USB download gadget")) => Seen::UBoot,
+        _ => Seen::Unknown,
+    }
+}
+
+fn seen_of(info: &nusb::DeviceInfo) -> Seen {
+    seen(
+        info.usb_version(),
+        info.device_version(),
+        info.product_string(),
+    )
+}
+
+fn mode(info: &nusb::DeviceInfo) -> UsbMode {
+    match seen_of(info) {
+        Seen::Maskrom => UsbMode::Maskrom,
+        Seen::Plug | Seen::UBoot => UsbMode::Loader,
+        Seen::Unknown => UsbMode::Unknown,
+    }
 }
 
 /// Windows opens the Tron only through WinUSB; Linux needs no driver.
@@ -65,6 +108,23 @@ impl UsbPort {
             })
             .context("the Tron is no longer on USB")
     }
+
+    /// Waits until the Tron is back on its port in mode `want`.
+    async fn wait_for(&self, found: &Found, want: Seen) -> Result<nusb::DeviceInfo> {
+        let end = tokio::time::Instant::now() + NEXT_MODE;
+        loop {
+            match self.info(found).await {
+                Ok(info) if seen_of(&info) == want => return Ok(info),
+                _ if tokio::time::Instant::now() >= end => {
+                    bail!(
+                        "the Tron did not show up as {want:?} within {} s",
+                        NEXT_MODE.as_secs()
+                    )
+                }
+                _ => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
+    }
 }
 
 impl Port for UsbPort {
@@ -88,23 +148,39 @@ impl Port for UsbPort {
     }
 
     async fn open(&self, found: &Found, loader_sha256: &str) -> Result<TronUsb> {
-        match found.mode {
-            UsbMode::Loader => {}
-            UsbMode::Maskrom => {
-                ensure!(
-                    format!("{:x}", Sha256::digest(&self.loader)) == loader_sha256,
-                    "the loader is not the one the tables name"
-                );
-                usb::load_loader(self.info(found).await?, &self.loader).await?;
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-            UsbMode::Unknown => {
-                bail!(
-                    "{NOT_SUPPORTED}: opening a Tron over USB is not supported yet, its USB modes are not measured"
-                )
-            }
+        let mut info = self.info(found).await?;
+        let mut now = seen_of(&info);
+        if now == Seen::UBoot {
+            // The answer to the restart may be lost with the device; the mode it comes back in decides.
+            let sent = usb::reboot_maskrom(info).await;
+            info = self
+                .wait_for(found, Seen::Maskrom)
+                .await
+                .with_context(|| format!("restart into maskrom: {sent:?}"))?;
+            now = Seen::Maskrom;
         }
-        TronUsb::open(self.info(found).await?).await
+        if now == Seen::Maskrom {
+            ensure!(
+                format!("{:x}", Sha256::digest(&self.loader)) == loader_sha256,
+                "the loader is not the one the tables name"
+            );
+            usb::load_loader(info, &self.loader)
+                .await
+                .context(LOADER_NOT_STARTED)?;
+            info = self
+                .wait_for(found, Seen::Plug)
+                .await
+                .context(LOADER_NOT_STARTED)?;
+            now = Seen::Plug;
+        }
+        ensure!(
+            now == Seen::Plug,
+            "{MODE_UNKNOWN}: USB {:04x}, device {:04x}, product {:?}",
+            info.usb_version(),
+            info.device_version(),
+            info.product_string()
+        );
+        TronUsb::open(info).await
     }
 
     async fn restart(&self, disk: TronUsb) -> Result<()> {
@@ -142,5 +218,35 @@ impl Port for FilePort {
     async fn restart(&self, _: FileDisk) -> Result<()> {
         self.started.set(true);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_measured_modes_are_told_apart() {
+        assert_eq!(seen(0x0200, 0x0100, None), Seen::Maskrom);
+        assert_eq!(seen(0x0200, 0x0100, Some("")), Seen::Maskrom);
+        assert_eq!(seen(0x0200, 0x0100, Some("USB-MSC")), Seen::Plug);
+        assert_eq!(
+            seen(0x0201, 0x0223, Some("USB download gadget")),
+            Seen::UBoot
+        );
+    }
+
+    #[test]
+    fn anything_else_is_unknown() {
+        for (usb, device, product) in [
+            (0x0201, 0x0100, None),
+            (0x0200, 0x0223, None),
+            (0x0200, 0x0100, Some("USB download gadget")),
+            (0x0201, 0x0223, Some("USB-MSC")),
+            (0x0200, 0x0100, Some("usb-msc")),
+            (0x0300, 0x0100, None),
+        ] {
+            assert_eq!(seen(usb, device, product), Seen::Unknown, "{product:?}");
+        }
     }
 }
