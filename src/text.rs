@@ -83,7 +83,7 @@ impl Owner for Terminal {
     }
 }
 
-/// Progress on stderr, at most once a second.
+/// Progress on stderr in percent of the step, at most once a second.
 pub struct Bar {
     last: std::cell::Cell<Option<Instant>>,
 }
@@ -118,7 +118,7 @@ impl Progress for Bar {
             return;
         }
         self.last.set(Some(now));
-        eprintln!("   {} of {} MB", done >> 20, total >> 20);
+        eprintln!("   {}%", done * 100 / total.max(1));
     }
 }
 
