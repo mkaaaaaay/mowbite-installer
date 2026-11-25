@@ -164,6 +164,18 @@ pub enum StartSeen {
     NotSeen,
 }
 
+/// The bytes of a base image: a file whose name ends in .zst is unpacked while it is read, any other is read as it
+/// is. Size and sha256 of the sidecar are those of these bytes.
+pub fn open_base(path: &std::path::Path) -> Result<Box<dyn std::io::Read>> {
+    use anyhow::Context;
+    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    Ok(if path.extension().is_some_and(|e| e == "zst") {
+        Box::new(zstd::Decoder::new(file)?)
+    } else {
+        Box::new(file)
+    })
+}
+
 /// The signed base system with the place for the per-device pack.
 pub struct BaseImage {
     pub path: PathBuf,

@@ -80,8 +80,7 @@ pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<Str
         filled_pack.len(),
         room(base)
     );
-    let mut src =
-        File::open(&base.path).with_context(|| format!("open {}", base.path.display()))?;
+    let mut src = crate::mower::open_base(&base.path)?;
     // It holds the Wi-Fi keys: readable by the owner only.
     let mut options = File::options();
     options.write(true).create_new(true);
@@ -257,6 +256,48 @@ mod tests {
             use std::os::unix::fs::MetadataExt;
             let stored = std::fs::metadata(&path).unwrap().blocks() * 512;
             assert!(stored < 2 << 20, "{stored} bytes stored");
+        }
+    }
+
+    #[test]
+    fn a_packed_base_gives_the_same_image_as_the_raw_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = base(dir.path(), pack::EMPTY);
+        let packed = BaseImage {
+            path: dir.path().join("base.img.zst"),
+            sha256: raw.sha256.clone(),
+            pack: raw.pack.clone(),
+        };
+        zstd::stream::copy_encode(
+            File::open(&raw.path).unwrap(),
+            File::create(&packed.path).unwrap(),
+            3,
+        )
+        .unwrap();
+        let filled = vec![0xA5u8; 4096];
+        let (a, b) = (dir.path().join("a.img"), dir.path().join("b.img"));
+        assert_eq!(
+            fill_base(&raw, &filled, &a).unwrap(),
+            fill_base(&packed, &filled, &b).unwrap()
+        );
+        assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+        // A packed file that unpacks to something else is refused like a wrong raw one.
+        let whole = std::fs::read(&packed.path).unwrap();
+        std::fs::write(
+            &packed.path,
+            zstd::encode_all(&[0u8; 65536][..], 3).unwrap(),
+        )
+        .unwrap();
+        assert!(fill_base(&packed, &filled, &dir.path().join("c.img")).is_err());
+        // A packed file cut short ends in an error while it is read, never in a shorter image.
+        for cut in [whole.len() - 1, whole.len() / 2, 5] {
+            std::fs::write(&packed.path, &whole[..cut]).unwrap();
+            let mut got = Vec::new();
+            let read = crate::mower::open_base(&packed.path)
+                .and_then(|mut r| Ok(r.read_to_end(&mut got)?));
+            assert!(read.is_err(), "cut at {cut}: {} bytes read", got.len());
+            let out = dir.path().join(format!("cut-{cut}.img"));
+            assert!(fill_base(&packed, &filled, &out).is_err());
         }
     }
 
