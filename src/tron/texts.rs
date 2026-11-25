@@ -7,6 +7,23 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "This version of the installer cannot open a Tron over USB yet. A later version will.",
     ),
     (
+        "tron.usb_driver_declined",
+        "Ohne die Erlaubnis von Windows richtet der Installer keinen USB-Treiber ein. Beim nächsten Start erneut \
+         fragen lassen.",
+        "Without the permission of Windows the installer sets up no USB driver. Start it again to be asked again.",
+    ),
+    (
+        "tron.usb_driver_failed",
+        "Der USB-Treiber für die Tron ließ sich nicht einrichten. Die Tron neu verbinden und den Installer erneut \
+         starten.",
+        "The USB driver for the Tron could not be set up. Connect the Tron again and start the installer again.",
+    ),
+    (
+        "tron.usb_driver_missing",
+        "Das Hilfsprogramm für den USB-Treiber fehlt. Den Installer vollständig aus dem ZIP-Archiv entpacken.",
+        "The helper for the USB driver is missing. Unpack the whole ZIP archive of the installer.",
+    ),
+    (
         "tron.compare_device",
         "Die Sicherung stammt aus einem früheren Lauf. Der Installer vergleicht sie mit der Tron.",
         "The backup comes from an earlier run. The installer compares it with the Tron.",
@@ -181,6 +198,7 @@ mod tests {
         include_str!("rootfs.rs"),
         include_str!("tables.rs"),
         include_str!("usb.rs"),
+        include_str!("usb_driver.rs"),
     ];
 
     #[test]

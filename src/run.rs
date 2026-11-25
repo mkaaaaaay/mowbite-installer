@@ -172,6 +172,8 @@ pub enum Next {
     Go,
     /// The owner connects the mower in USB mode (photo guide).
     Connect,
+    /// The mower is on USB, but the system has no driver for it yet: the owner lets the frame install it.
+    UsbDriver,
     /// The owner reads the warnings and agrees, or ends the run.
     Agree(Vec<Finding>),
     /// Writing began and did not finish, or the new system did not start: write again or go back.
@@ -313,6 +315,9 @@ impl<'m, M: Mower> Driver<'m, M> {
         let Some(found) = self.mower.detect().await? else {
             return Ok(Next::Connect);
         };
+        if found.needs_driver {
+            return Ok(Next::UsbDriver);
+        }
         let (dev, identity) = self.mower.open(&found, ctx).await?;
         if let Some(known) = &self.run.identity {
             if known.serial_hash != identity.serial_hash || known.table != identity.table {

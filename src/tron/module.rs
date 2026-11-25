@@ -193,6 +193,10 @@ impl<P: Port> Mower for Tron<P> {
         self.port.find().await
     }
 
+    async fn install_usb_driver(&self) -> Result<()> {
+        super::usb_driver::install().await
+    }
+
     async fn open(&self, found: &Found, ctx: &mut Ctx<'_>) -> Result<(Self::Device, Identity)> {
         let loader = tables::loader(&ctx.tables.raw)?;
         let mut disk = self.port.open(found, &loader.sha256).await?;

@@ -1,0 +1,13 @@
+mowbite-usb-driver.exe sets up WinUSB for the Airseekers Tron in USB mode (2207:350b). It uses libwdi, a library of
+its own in libwdi.dll:
+
+  libwdi 1.5.1, https://github.com/pbatard/libwdi
+  Licensed under the GNU Lesser General Public License, version 3 or later: libwdi-COPYING-LGPL.txt with the GNU
+  General Public License it builds on in libwdi-COPYING.txt.
+  The complete source of this build is in libwdi-v1.5.1-source.tar.gz. libwdi.dll may be replaced by another build
+  of libwdi with the same interface.
+
+libwdi.dll contains the WinUSB co-installers of the Windows Driver Kit 8 redistributable components of Microsoft,
+files Microsoft lists as redistributable.
+
+mowbite-usb-driver.exe and mowbite-installer.exe are under the licence in LICENSE of the installer.

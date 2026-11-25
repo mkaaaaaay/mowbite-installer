@@ -30,6 +30,8 @@ pub struct Fake {
     pub seen: RefCell<Vec<bool>>,
     /// The error the next write or back ends with.
     pub write_error: RefCell<Option<anyhow::Error>>,
+    /// detect finds the mower without its driver until install_usb_driver ran.
+    pub no_driver: RefCell<bool>,
 }
 
 impl Fake {
@@ -59,7 +61,13 @@ impl Mower for Fake {
         Ok((!*self.absent.borrow()).then(|| Found {
             mode: UsbMode::Loader,
             bus_path: "1-1".into(),
+            needs_driver: *self.no_driver.borrow(),
         }))
+    }
+    async fn install_usb_driver(&self) -> Result<()> {
+        self.calls.borrow_mut().push("install_usb_driver");
+        *self.no_driver.borrow_mut() = false;
+        Ok(())
     }
     async fn open(&self, _: &Found, _: &mut Ctx<'_>) -> Result<((), Identity)> {
         self.calls.borrow_mut().push("open");
@@ -129,6 +137,7 @@ impl Mower for Fake {
             StartSeen::UsbAgain(Found {
                 mode: UsbMode::Loader,
                 bus_path: "1-1".into(),
+                needs_driver: false,
             })
         } else {
             StartSeen::NotSeen

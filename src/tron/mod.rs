@@ -15,3 +15,4 @@ pub mod rootfs;
 pub mod tables;
 pub mod texts;
 pub mod usb;
+pub mod usb_driver;

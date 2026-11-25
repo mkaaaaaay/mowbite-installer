@@ -293,6 +293,21 @@ pub async fn run<M: Mower, F: FirstStart>(
                 }
                 tokio::time::sleep(LOOK).await;
             }
+            Next::UsbDriver => {
+                owner.say(
+                    "Windows has no USB driver for the mower yet. The installer sets up WinUSB for it with libwdi, \
+                     as Zadig does; Windows asks for permission.",
+                );
+                if !owner.agree("Set up the USB driver now?") {
+                    return leave(&mut driver, owner);
+                }
+                if let Err(error) = mower.install_usb_driver().await {
+                    owner.say(&format!("Error: {}", explain(texts, &error)));
+                    log.info("error", &format!("{error:#}"));
+                    return leave(&mut driver, owner);
+                }
+                log.info("usb_driver", "installed");
+            }
             Next::Agree(warnings) => {
                 owner.say("Before writing:");
                 show(owner, texts, &warnings);
@@ -470,6 +485,20 @@ mod tests {
         let log = std::fs::read_to_string(w.store.root().join("run.log")).unwrap();
         assert!(log.contains("first_start_wait not found"));
         assert!(!log.contains("geheim123"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_usb_driver_is_set_up_after_a_yes() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        *fake.no_driver.borrow_mut() = true;
+        let owner = Script::default();
+        assert!(!go(&mut w, &fake, &owner, vec![]).await.unwrap());
+        assert_eq!((fake.ran("install_usb_driver"), fake.ran("open")), (0, 0));
+        owner.yes.set(true);
+        assert!(go(&mut w, &fake, &owner, vec![]).await.unwrap());
+        assert_eq!(fake.ran("install_usb_driver"), 1);
+        assert_eq!(fake.ran("write"), 1);
     }
 
     #[tokio::test(start_paused = true)]

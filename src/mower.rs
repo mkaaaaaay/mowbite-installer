@@ -71,6 +71,9 @@ pub struct Found {
     pub mode: UsbMode,
     /// Lets the frame find the same device again after a restart.
     pub bus_path: String,
+    /// The system has no driver yet that opens it (Windows without WinUSB): install_usb_driver first.
+    #[serde(default)]
+    pub needs_driver: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +236,10 @@ pub trait Mower {
     }
 
     async fn detect(&self) -> Result<Option<Found>>;
+    /// Sets up the driver a Found with needs_driver lacks; the system asks the owner for permission.
+    async fn install_usb_driver(&self) -> Result<()> {
+        anyhow::bail!("this mower needs no USB driver")
+    }
     /// Makes the device readable (the Tron loads its loader into RAM) and reads who it is.
     async fn open(&self, found: &Found, ctx: &mut Ctx<'_>) -> Result<(Self::Device, Identity)>;
     /// Everything once, system and boot areas twice and compared; resumes after an abort, never replaces a backup.

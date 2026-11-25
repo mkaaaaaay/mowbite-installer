@@ -32,3 +32,62 @@ jobs:
           name: mowbite-installer-${{ matrix.os }}
           path: target/release/${{ matrix.file }}
           retention-days: 14
+
+  # The WinUSB helper: libwdi as its own DLL (LGPL-3) with its source and licence, and mowbite-usb-driver.exe that
+  # loads it. Windows 10 and 11 on x64 only.
+  usb-driver:
+    runs-on: windows-2025
+    env:
+      LIBWDI_TAG: v1.5.1
+      LIBWDI_COMMIT: 9b23b82a2dd1cbffc16d46c212f92c6bf8c0c602
+      WDK_REDIST_URL: https://go.microsoft.com/fwlink/p/?LinkID=253170
+      WDK_REDIST_SHA256: 29314207814ce9d5d73695f7e9239539cf37c79e750b9d5ea5a5ef5487a583d6
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            base-devel
+            autotools
+            git
+      - name: Sources of libwdi and the WinUSB files of the WDK 8 redistributable
+        run: |
+          git clone --quiet --depth 1 --branch "$LIBWDI_TAG" https://github.com/pbatard/libwdi.git libwdi
+          test "$(git -C libwdi rev-parse HEAD)" = "$LIBWDI_COMMIT"
+          curl -sSfL "$WDK_REDIST_URL" -o wdk-redist.msi
+          echo "$WDK_REDIST_SHA256  wdk-redist.msi" | sha256sum -c -
+          msiexec //a wdk-redist.msi //qn TARGETDIR="$(cygpath -w "$PWD/wdk")"
+      - name: libwdi.dll
+        working-directory: libwdi
+        run: |
+          ./bootstrap.sh
+          ./configure --build=x86_64-w64-mingw32 --host=x86_64-w64-mingw32 --disable-32bit --enable-shared \
+            --disable-static --disable-debug --with-wdkdir="../wdk/Windows Kits/8.0" --with-wdfver=1011 \
+            LDFLAGS=-static-libgcc
+          make
+      - name: mowbite-usb-driver.exe
+        run: |
+          gcc -O2 -Wall -Wextra -Werror -static-libgcc -Ilibwdi/libwdi windows/usb-driver.c \
+            -Llibwdi/libwdi/.libs -lwdi -o mowbite-usb-driver.exe
+          mkdir out
+          cp mowbite-usb-driver.exe libwdi/libwdi/.libs/libwdi.dll out/
+          cp libwdi/COPYING out/libwdi-COPYING.txt
+          cp libwdi/COPYING-LGPL out/libwdi-COPYING-LGPL.txt
+          git -C libwdi archive --format=tar.gz --prefix="libwdi-$LIBWDI_TAG/" -o "../out/libwdi-$LIBWDI_TAG-source.tar.gz" HEAD
+          cp windows/THIRD-PARTY.txt out/
+          # No runtime of MinGW has to come along: only Windows DLLs and libwdi.dll.
+          for f in out/*.exe out/*.dll; do
+            echo "$f: $(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | tr '\n' ' ')"
+          done | tee dlls.txt
+          ! grep -Ei 'libgcc|libwinpthread|libstdc' dlls.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mowbite-usb-driver-windows
+          path: out/
+          retention-days: 14

@@ -40,6 +40,19 @@ fn mode(_info: &nusb::DeviceInfo) -> UsbMode {
     UsbMode::Unknown
 }
 
+/// Windows opens the Tron only through WinUSB; Linux needs no driver.
+#[cfg(windows)]
+fn needs_driver(info: &nusb::DeviceInfo) -> bool {
+    !info
+        .driver()
+        .is_some_and(|d| d.eq_ignore_ascii_case("winusb"))
+}
+
+#[cfg(not(windows))]
+fn needs_driver(_info: &nusb::DeviceInfo) -> bool {
+    false
+}
+
 impl UsbPort {
     async fn info(&self, found: &Found) -> Result<nusb::DeviceInfo> {
         usb::list()
@@ -68,6 +81,7 @@ impl Port for UsbPort {
             [one] => Ok(Some(Found {
                 mode: mode(one),
                 bus_path: bus_path(one),
+                needs_driver: needs_driver(one),
             })),
             _ => bail!("more than one Rockchip device on USB, keep only the Tron connected"),
         }
@@ -113,6 +127,7 @@ impl Port for FilePort {
         Ok((!self.started.get() && self.path.exists()).then(|| Found {
             mode: UsbMode::Loader,
             bus_path: self.path.display().to_string(),
+            needs_driver: false,
         }))
     }
 
