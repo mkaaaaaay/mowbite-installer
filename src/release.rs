@@ -2,7 +2,7 @@
 //! (mowbite-tables) for the modules, and base.json (mowbite-base), the sidecar that names size and sha256 of the base
 //! system and where its pack file lies.
 
-use crate::mower::{BaseImage, Tables};
+use crate::mower::{BaseImage, Progress, Tables, open_base};
 use crate::sign::Signers;
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -77,13 +77,15 @@ fn pack_fits(pack: &[(u64, u64)], size: u64) -> bool {
         && sorted.windows(2).all(|w| w[0].0 + w[0].1 <= w[1].0)
 }
 
-/// The base system at image, once its signed sidecar names this platform, this file, its size and its sha256.
+/// The base system at image (raw, or packed with zstd as .zst), once its signed sidecar names this platform, this
+/// file, and size and sha256 of the image it gives. Reading it all takes minutes, so it shows progress.
 pub fn base(
     sidecar: &[u8],
     sig: &str,
     signers: &Signers,
     image: &Path,
     platform: &str,
+    progress: &dyn Progress,
 ) -> Result<(BaseImage, u32)> {
     signers
         .verify(sidecar, sig, "mowbite-base")
@@ -104,22 +106,30 @@ pub fn base(
         pack_fits(&s.pack, s.size),
         "the pack file of base.json does not lie inside the image"
     );
-    let mut file = std::fs::File::open(image).with_context(|| image.display().to_string())?;
-    let size = file.metadata()?.len();
-    ensure!(
-        size == s.size,
-        "{name} has {size} bytes, base.json says {}",
-        s.size
-    );
+    let mut file = open_base(image)?;
+    progress.step("release.check_base");
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
+    let mut size = 0u64;
     loop {
-        let n = file.read(&mut buf)?;
+        let n = file.read(&mut buf).with_context(|| name.to_string())?;
         if n == 0 {
             break;
         }
+        size += n as u64;
+        ensure!(
+            size <= s.size,
+            "{name} gives more than the {} bytes base.json says",
+            s.size
+        );
         hash.update(&buf[..n]);
+        progress.bytes(size, s.size);
     }
+    ensure!(
+        size == s.size,
+        "{name} gives {size} bytes, base.json says {}",
+        s.size
+    );
     let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     ensure!(
         got == s.sha256,
@@ -136,7 +146,7 @@ pub fn base(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::testing::signed;
+    use crate::testing::{Quiet, signed};
     use serde_json::json;
 
     fn signers(public: &str) -> Signers {
@@ -191,12 +201,12 @@ mod tests {
             return;
         };
         let keys = signers(&public);
-        let (got, number) = base(good.as_bytes(), &sig, &keys, &image, "tron").unwrap();
+        let (got, number) = base(good.as_bytes(), &sig, &keys, &image, "tron", &Quiet).unwrap();
         assert_eq!(
             (got.pack, got.sha256.as_str(), number),
             (vec![(12288, 4096), (4096, 4096)], sha.as_str(), 2)
         );
-        assert!(base(good.as_bytes(), &sig, &keys, &image, "nx60i").is_err());
+        assert!(base(good.as_bytes(), &sig, &keys, &image, "nx60i", &Quiet).is_err());
         for bad in [
             json!({"sha256": "0".repeat(64)}),
             json!({"size": 4096}),
@@ -213,12 +223,47 @@ mod tests {
             let text = sidecar(bad.clone());
             let (_, s) = signed(dir.path(), "k", text.as_bytes(), "mowbite-base").unwrap();
             assert!(
-                base(text.as_bytes(), &s, &keys, &image, "tron").is_err(),
+                base(text.as_bytes(), &s, &keys, &image, "tron", &Quiet).is_err(),
                 "{bad}"
             );
         }
         std::fs::write(&image, vec![8u8; 3 * 4096]).unwrap();
-        assert!(base(good.as_bytes(), &sig, &keys, &image, "tron").is_err());
+        assert!(base(good.as_bytes(), &sig, &keys, &image, "tron", &Quiet).is_err());
+    }
+
+    #[test]
+    fn a_packed_base_is_checked_as_the_image_it_gives_with_progress() {
+        struct Seen(std::cell::RefCell<Vec<(u64, u64)>>);
+        impl Progress for Seen {
+            fn step(&self, _: &'static str) {}
+            fn bytes(&self, done: u64, total: u64) {
+                self.0.borrow_mut().push((done, total));
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..3u32 << 20).map(|i| (i % 251) as u8).collect();
+        let image = dir.path().join("base-9.img.zst");
+        std::fs::write(&image, zstd::encode_all(&data[..], 3).unwrap()).unwrap();
+        let sha: String = Sha256::digest(&data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let text = json!({"schema": 1, "platform": "tron", "base": 2, "file": "base-9.img.zst",
+            "size": data.len(), "sha256": sha, "pack": [[4096, 4096]]})
+        .to_string();
+        let Some((public, sig)) = signed(dir.path(), "k", text.as_bytes(), "mowbite-base") else {
+            return;
+        };
+        let keys = signers(&public);
+        let seen = Seen(Default::default());
+        let (got, _) = base(text.as_bytes(), &sig, &keys, &image, "tron", &seen).unwrap();
+        assert_eq!(got.sha256, sha);
+        let seen = seen.0.into_inner();
+        assert!(seen.len() >= 3);
+        assert_eq!(seen.last(), Some(&(data.len() as u64, data.len() as u64)));
+        let packed = std::fs::read(&image).unwrap();
+        std::fs::write(&image, &packed[..packed.len() / 2]).unwrap();
+        assert!(base(text.as_bytes(), &sig, &keys, &image, "tron", &Quiet).is_err());
     }
 
     #[test]

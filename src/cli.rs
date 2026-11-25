@@ -1,18 +1,18 @@
 //! The command line of the text mode: install or back, the backup folder and the folder with the release files.
 //! Loads the release files against the built-in keys and asks the owner for the Wi-Fi.
 
-use crate::mower::{BaseImage, Bundle, Inputs, Mower, Tables, WorkDir};
+use crate::mower::{BaseImage, Bundle, Inputs, Mower, Progress, Tables, WorkDir};
 use crate::net::Confirm;
 use crate::release;
 use crate::run::Goal;
 use crate::secret::Secret;
 use crate::sign::Signers;
 use crate::store::Store;
-use crate::text::{self, Terminal};
+use crate::text::{self, Bar, Terminal};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
 use sha2::Digest;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub const USAGE: &str =
@@ -85,7 +85,12 @@ pub fn tables(release: &Path, signers: &Signers, module: &str) -> Result<Tables>
 }
 
 /// The base image and its number.
-pub fn base(release: &Path, signers: &Signers, platform: &str) -> Result<(BaseImage, u32)> {
+pub fn base(
+    release: &Path,
+    signers: &Signers,
+    platform: &str,
+    progress: &dyn Progress,
+) -> Result<(BaseImage, u32)> {
     #[derive(Deserialize)]
     struct Named {
         file: String,
@@ -94,7 +99,14 @@ pub fn base(release: &Path, signers: &Signers, platform: &str) -> Result<(BaseIm
     let sidecar = std::fs::read(&path).with_context(|| path.display().to_string())?;
     let named: Named = serde_json::from_slice(&sidecar).context("base.json")?;
     let image = release_file(release, &named.file)?;
-    release::base(&sidecar, &signature(&path)?, signers, &image, platform)
+    release::base(
+        &sidecar,
+        &signature(&path)?,
+        signers,
+        &image,
+        platform,
+        progress,
+    )
 }
 
 /// The base number an OS bundle needs, from its bundle.json; None when it names none.
@@ -226,6 +238,10 @@ fn ask_wifi<M: Mower>(mower: &M) -> Result<(String, Secret<String>)> {
             "no input: the Wi-Fi is needed"
         );
         let name = name.trim_end_matches(['\r', '\n']).to_owned();
+        if name.is_empty() {
+            println!("Please type the name of your Wi-Fi.");
+            continue;
+        }
         let key = Secret::new(rpassword::prompt_password("Wi-Fi key (not shown): ")?);
         match mower.check_wifi(&name, key.expose()) {
             Ok(()) => return Ok((name, key)),
@@ -241,6 +257,12 @@ pub async fn run<M: Mower>(
     signers: &Signers,
     tables: &Tables,
 ) -> Result<bool> {
+    // Started without any terminal (a double click): stop at once, not after minutes at the first question.
+    ensure!(
+        std::io::stdin().is_terminal() || std::io::stdout().is_terminal(),
+        "the installer needs a terminal: it asks there for your Wi-Fi and what to do next. Open a terminal and \
+         start it there.\n{USAGE}"
+    );
     let mut store = Store::open(&args.store)?;
     crate::store::private_dir(&args.work)?;
     let space = mower.space_needed();
@@ -259,7 +281,8 @@ pub async fn run<M: Mower>(
     );
     let (base, inputs) = match args.goal {
         Goal::Install => {
-            let (base, base_number) = base(&args.release, signers, mower.id())?;
+            println!("Checking the base system in the release folder, this takes a few minutes.");
+            let (base, base_number) = base(&args.release, signers, mower.id(), &Bar::new())?;
             let bundles = bundles(&args.release, signers)?;
             if let Some(os) = bundles.first() {
                 if let Some(needs) = os_needs_base(&os.path)? {
