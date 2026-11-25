@@ -1,6 +1,6 @@
 //! The backup of the whole flash, area by area: everything once into the store (seekable zstd, the sha256 is over
 //! the raw bytes), the start areas and the rootfs a second time and compared, so a reading fault cannot slip in
-//! unnoticed.
+//! unnoticed. Each saved file is unpacked once more and checked; the progress counts that too.
 
 use super::seekable::{FrameWriter, SeekableReader};
 use crate::disk::{Disk, SECTOR};
@@ -142,12 +142,20 @@ pub fn open_seekable(store: &Store, name: &str) -> Result<SeekableReader> {
 }
 
 pub fn raw_sha256(store: &Store, name: &str) -> Result<String> {
-    unpacked_sha256(open_raw(store, name)?)
+    unpacked_sha256(open_raw(store, name)?, &mut |_| {})
 }
 
-fn unpacked_sha256(raw: impl Read) -> Result<String> {
+fn unpacked_sha256(mut raw: impl Read, done: &mut dyn FnMut(u64)) -> Result<String> {
     let mut hash = Sha256::new();
-    std::io::copy(&mut { raw }, &mut hash)?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = raw.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+        done(n as u64);
+    }
     Ok(format!("{:x}", hash.finalize()))
 }
 
@@ -204,7 +212,7 @@ pub async fn backup<D: Disk>(
     let areas = areas(table, disk.sectors())?;
     let total: u64 = areas
         .iter()
-        .map(|a| a.sectors * SECTOR * if a.twice { 2 } else { 1 })
+        .map(|a| a.sectors * SECTOR * if a.twice { 3 } else { 2 })
         .sum();
     let mut done_bytes = 0u64;
     let mut out = Vec::new();
@@ -217,7 +225,7 @@ pub async fn backup<D: Disk>(
         let recorded = store.recorded(&name)?.is_some();
         let sum = if recorded {
             done(area.sectors * SECTOR);
-            raw_sha256(store, &name)?
+            unpacked_sha256(open_raw(store, &name)?, &mut done)?
         } else {
             store.discard_unfinished(&name)?;
             let mut packed = FrameWriter::new(ToFile(store.create_new(&name)?));
@@ -227,7 +235,10 @@ pub async fn backup<D: Disk>(
             // Checked before its line goes into SHA256SUMS: a finished file always unpacks to what was read, front
             // to back and by its seek table.
             ensure!(
-                unpacked_sha256(zstd::Decoder::new(File::open(store.path(&name)?)?)?)? == sum
+                unpacked_sha256(
+                    zstd::Decoder::new(File::open(store.path(&name)?)?)?,
+                    &mut done
+                )? == sum
                     && SeekableReader::open(File::open(store.path(&name)?)?)?.len()
                         == area.sectors * SECTOR,
                 "{name}: the saved file does not unpack to what was read"
@@ -351,8 +362,8 @@ mod tests {
         assert_eq!(
             p.0.get(),
             (
-                512 * 512 + (16 + 16 + 64 + 172) * 512,
-                512 * 512 + (16 + 16 + 64 + 172) * 512
+                2 * 512 * 512 + (16 + 16 + 64 + 172) * 512,
+                2 * 512 * 512 + (16 + 16 + 64 + 172) * 512
             )
         );
     }
@@ -379,6 +390,8 @@ mod tests {
         backup(&mut disk, &table(), &mut store, &Cancel::default(), &p)
             .await
             .unwrap();
+        let (done, total) = p.0.get();
+        assert_eq!(done, total);
         let after = std::fs::metadata(store.path("uboot.img.zst").unwrap())
             .unwrap()
             .modified()
