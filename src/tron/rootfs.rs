@@ -30,8 +30,12 @@ impl Ext4Read for At {
 /// Opens the ext4 file system that starts `offset` bytes into `image`.
 pub fn open(image: &Path, offset: u64) -> Result<Ext4> {
     let file = File::open(image).with_context(|| format!("open {}", image.display()))?;
-    Ext4::load(Box::new(At { file, offset }))
-        .map_err(|e| anyhow!("{}: no readable ext4: {e}", image.display()))
+    load(At { file, offset }, &image.display().to_string())
+}
+
+/// Opens the ext4 file system that starts at the first byte of `read`.
+pub fn load(read: impl Ext4Read + 'static, what: &str) -> Result<Ext4> {
+    Ext4::load(Box::new(read)).map_err(|e| anyhow!("{what}: no readable ext4: {e}"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -6,7 +6,8 @@ use super::gpt::{self, Entry};
 use super::identity;
 use super::rootfs::{self, Kind};
 use crate::mower::{Finding, Part};
-use std::path::Path;
+use anyhow::Result;
+use ext4_view::Ext4;
 
 /// What the signed tables say about known devices.
 pub struct Known {
@@ -66,7 +67,7 @@ impl Checked {
 
 /// `start`: the first sectors of the flash (at least gpt::PRIMARY_SECTORS), `boot`: the whole boot partition,
 /// `rootfs`: the saved rootfs partition.
-pub fn check(start: &[u8], boot: &[u8], rootfs: &Path, known: &Known) -> Checked {
+pub fn check(start: &[u8], boot: &[u8], rootfs: Result<Ext4>, known: &Known) -> Checked {
     let mut c = Checked::default();
     check_table(&mut c, start, known);
     match fit::read_boot(boot) {
@@ -133,8 +134,8 @@ fn check_boot(c: &mut Checked, b: &Boot) {
     }
 }
 
-fn check_rootfs(c: &mut Checked, image: &Path, release: &str, known: &Known) {
-    let fs = match rootfs::open(image, 0) {
+fn check_rootfs(c: &mut Checked, rootfs: Result<Ext4>, release: &str, known: &Known) {
+    let fs = match rootfs {
         Ok(fs) => fs,
         Err(e) => return c.stop("tron.rootfs_unreadable", format!("{e:#}")),
     };
@@ -220,6 +221,7 @@ mod tests {
     use crate::tron::fit::tests::{KERNEL, boot_partition};
     use crate::tron::gpt::tests::{ROOTFS_UUID, image};
     use crate::tron::rootfs::tests::{GOOD_VERMAGIC, ext4_from, fallocate, vendor_tree};
+    use std::path::Path;
 
     const BOOTARGS: &str = "console=ttyFIQ0 root=PARTUUID=614e0000-0000 rw rootwait";
 
@@ -268,7 +270,7 @@ mod tests {
         vendor_tree(&tree, vermagic);
         let img = dir.path().join("rootfs.img");
         ext4_from(&tree, &img);
-        check(start, boot, &img, known)
+        check(start, boot, rootfs::open(&img, 0), known)
     }
 
     #[test]
@@ -315,7 +317,7 @@ mod tests {
         ext4_from(&tree, &img);
         fallocate(&img, "/etc/iqfiles/a.json", 7);
         let boot = boot_partition(KERNEL, BOOTARGS, false);
-        let c = check(&table(), &boot, &img, &known());
+        let c = check(&table(), &boot, rootfs::open(&img, 0), &known());
         assert!(
             codes(&c).contains(&"stop tron.part_unwritten".to_string()),
             "{:?}",
@@ -324,7 +326,7 @@ mod tests {
         let mut k = known();
         k.required.retain(|p| p != "/etc/iqfiles");
         k.optional.push("/etc/iqfiles".into());
-        let c = check(&table(), &boot, &img, &k);
+        let c = check(&table(), &boot, rootfs::open(&img, 0), &k);
         assert!(!c.stopped(), "{:?}", c.findings);
         assert!(codes(&c).contains(&"info tron.optional_unwritten".to_string()));
     }
@@ -436,7 +438,7 @@ mod tests {
         check(
             &table(),
             &boot_partition(KERNEL, BOOTARGS, false),
-            &img,
+            rootfs::open(&img, 0),
             known,
         )
     }

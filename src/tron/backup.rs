@@ -1,6 +1,8 @@
-//! The backup of the whole flash, area by area: everything once into the store (zstd, the sha256 is over the raw
-//! bytes), the start areas and the rootfs a second time and compared, so a reading fault cannot slip in unnoticed.
+//! The backup of the whole flash, area by area: everything once into the store (seekable zstd, the sha256 is over
+//! the raw bytes), the start areas and the rootfs a second time and compared, so a reading fault cannot slip in
+//! unnoticed.
 
+use super::seekable::{FrameWriter, SeekableReader};
 use crate::disk::{Disk, SECTOR};
 use crate::mower::{Backup, Cancel, Part, Progress};
 use crate::store::{NewFile, Store};
@@ -113,9 +115,9 @@ pub async fn read_area<D: Disk>(
     Ok(format!("{:x}", hash.finalize()))
 }
 
-struct ToFile<'a>(&'a mut NewFile);
+struct ToFile(NewFile);
 
-impl Write for ToFile<'_> {
+impl Write for ToFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.write(buf).map_err(std::io::Error::other)?;
         Ok(buf.len())
@@ -129,6 +131,14 @@ impl Write for ToFile<'_> {
 pub fn open_raw(store: &Store, name: &str) -> Result<impl Read + use<>> {
     store.verify(name)?;
     Ok(zstd::Decoder::new(File::open(store.path(name)?)?)?)
+}
+
+/// Random reads of a saved area, after its file passed the check against SHA256SUMS.
+pub fn open_seekable(store: &Store, name: &str) -> Result<SeekableReader> {
+    store.verify(name)?;
+    SeekableReader::open(File::open(store.path(name)?)?).with_context(|| {
+        format!("{name}: made by an older installer, start again with a new, empty backup folder")
+    })
 }
 
 pub fn raw_sha256(store: &Store, name: &str) -> Result<String> {
@@ -210,22 +220,19 @@ pub async fn backup<D: Disk>(
             raw_sha256(store, &name)?
         } else {
             store.discard_unfinished(&name)?;
-            let mut file = store.create_new(&name)?;
-            let mut packed = zstd::Encoder::new(ToFile(&mut file), 3)?;
-            // Packing on one core is slower than USB reads.
-            packed
-                .multithread(std::thread::available_parallelism().map_or(1, |n| n.get() as u32))?;
-            let sum = read_area(disk, area, cancel, &mut done, &mut |b| {
-                Ok(packed.write_all(b)?)
-            })
-            .await?;
-            packed.finish()?;
-            // Checked before its line goes into SHA256SUMS: a finished file always unpacks to what was read.
+            let mut packed = FrameWriter::new(ToFile(store.create_new(&name)?));
+            let sum =
+                read_area(disk, area, cancel, &mut done, &mut |b| packed.write_all(b)).await?;
+            let file = packed.finish()?;
+            // Checked before its line goes into SHA256SUMS: a finished file always unpacks to what was read, front
+            // to back and by its seek table.
             ensure!(
-                unpacked_sha256(zstd::Decoder::new(File::open(store.path(&name)?)?)?)? == sum,
+                unpacked_sha256(zstd::Decoder::new(File::open(store.path(&name)?)?)?)? == sum
+                    && SeekableReader::open(File::open(store.path(&name)?)?)?.len()
+                        == area.sectors * SECTOR,
                 "{name}: the saved file does not unpack to what was read"
             );
-            file.finish()?;
+            file.0.finish()?;
             sum
         };
         if area.twice && !(recorded && area.name == CHANGES_ON_RESTART) {

@@ -16,8 +16,8 @@ const META_MAX_BYTES: u64 = 256 << 20;
 
 /// Packed backup of a Tron: 19.5 GB measured on ours (62.6 GB flash), with room.
 const BACKUP_BYTES: u64 = 25_000_000_000;
-/// One rootfs partition (16 GiB): the unpacked vendor rootfs and the new image are never there together, and
-/// zero blocks stay holes, so this is the bound where the file system keeps none.
+/// The new rootfs image (16 GiB partition), the only work file; the vendor rootfs is read from the backup. Its zero
+/// blocks stay holes, about 1 GB is written; this is the bound where the file system keeps no holes.
 const WORK_BYTES: u64 = 17_179_869_184;
 /// Room in the pack for the vendor parts and the small files: 25.4 MB measured on ours, with room.
 const VENDOR_ROOM: u64 = 64 << 20;
@@ -48,17 +48,6 @@ impl Drop for Removes {
             let _ = std::fs::remove_file(path);
         }
     }
-}
-
-/// A new work file readable by the owner only.
-fn create_private(path: &std::path::Path) -> Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options
-        .open(path)
-        .with_context(|| format!("create {}", path.display()))
 }
 
 async fn read_table<D: Disk>(disk: &mut D) -> Result<Vec<Part>> {
@@ -110,31 +99,16 @@ fn saved(store: &crate::store::Store, area: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The saved vendor rootfs unpacked anew into the work folder for ext4 reads; removed when the guard drops. The
-/// file is checked against SHA256SUMS while it is unpacked, so nothing left in the folder is ever used.
-fn unpacked_rootfs(ctx: &Ctx<'_>, b: &Backup) -> Result<(PathBuf, Removes)> {
-    let path = ctx.work.path.join("vendor-rootfs.img");
-    let want = sectors(part(&b.table, "rootfs")?) * SECTOR;
-    std::fs::create_dir_all(&ctx.work.path)?;
-    for old in [&path, &path.with_extension("part")] {
-        match std::fs::remove_file(old) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
-        }
-    }
-    let tmp = path.with_extension("part");
-    let tmp_guard = Removes(Some(tmp.clone()));
-    let mut out = create_private(&tmp)?;
-    let len = image::copy_sparse(
-        &mut open_raw(ctx.store, &file_name("rootfs"))?,
-        &mut out,
-        |_| {},
-    )?;
-    out.sync_all()?;
-    ensure!(len == want, "the saved rootfs has the wrong size");
-    std::fs::rename(&tmp, &path)?;
-    tmp_guard.keep();
-    Ok((path.clone(), Removes(Some(path))))
+/// The vendor rootfs read straight from its backup file, frame by frame; the file passed the check against
+/// SHA256SUMS first.
+fn vendor_rootfs(ctx: &Ctx<'_>, b: &Backup) -> Result<ext4_view::Ext4> {
+    let name = file_name("rootfs");
+    let read = backup::open_seekable(ctx.store, &name)?;
+    ensure!(
+        read.len() == sectors(part(&b.table, "rootfs")?) * SECTOR,
+        "the saved rootfs has the wrong size"
+    );
+    rootfs::load(read, &name)
 }
 
 impl<P: Port> Mower for Tron<P> {
@@ -269,8 +243,7 @@ impl<P: Port> Mower for Tron<P> {
         let known = tables::parse(&ctx.tables.raw)?;
         let start = saved(ctx.store, "flash-start")?;
         let boot = saved(ctx.store, "boot")?;
-        let (rootfs, _removes) = unpacked_rootfs(ctx, b)?;
-        Ok(checks::check(&start, &boot, &rootfs, &known).findings)
+        Ok(checks::check(&start, &boot, vendor_rootfs(ctx, b), &known).findings)
     }
 
     async fn prepare(
@@ -281,16 +254,14 @@ impl<P: Port> Mower for Tron<P> {
         ctx: &mut Ctx<'_>,
     ) -> Result<WritePlan> {
         let known = tables::parse(&ctx.tables.raw)?;
-        let (vendor_path, removes_vendor) = unpacked_rootfs(ctx, b)?;
-        let vendor = rootfs::open(&vendor_path, 0)?;
+        let vendor = vendor_rootfs(ctx, b)?;
         let mtime = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
         let archive = contents::build(&vendor, &known, inputs, mtime)?;
         drop(vendor);
-        // Gone before the new image is made: the work folder never holds both.
-        drop(removes_vendor);
         let filled = pack::pack(archive, image::room(base))?;
+        std::fs::create_dir_all(&ctx.work.path)?;
         let out = ctx.work.path.join("mowbite-rootfs.img");
         if out.exists() {
             std::fs::remove_file(&out)?;
@@ -567,10 +538,6 @@ mod tests {
         let (mut dev, _) = tron.open(&found, &mut ctx(&mut w)).await.unwrap();
         let b = tron.backup(&mut dev, &mut ctx(&mut w)).await.unwrap();
         drop(dev);
-        // A stale work file of the right size is never used.
-        std::fs::create_dir_all(&w.work.path).unwrap();
-        let stale = w.work.path.join("vendor-rootfs.img");
-        std::fs::write(&stale, vec![0u8; (FS * SECTOR) as usize]).unwrap();
         let (mut dev, _) = tron.open(&found, &mut ctx(&mut w)).await.unwrap();
         let found_now = tron.check(&mut dev, &b, &mut ctx(&mut w)).await.unwrap();
         assert!(
@@ -578,8 +545,8 @@ mod tests {
             "{found_now:?}"
         );
         assert!(
-            !stale.exists(),
-            "the vendor rootfs stays in the work folder"
+            !w.work.path.exists(),
+            "the checks read the backup, nothing goes into the work folder"
         );
         drop(dev);
         // The Tron started its system in between.

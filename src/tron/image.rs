@@ -18,11 +18,7 @@ static ZEROS: [u8; SPARSE_BLOCK] = [0; SPARSE_BLOCK];
 
 /// Copies `src` into the new, empty file `dst` and leaves zero blocks as holes where the file system supports it;
 /// `seen` gets every byte in order. Returns the length.
-pub(super) fn copy_sparse(
-    src: &mut dyn Read,
-    dst: &mut File,
-    mut seen: impl FnMut(&[u8]),
-) -> Result<u64> {
+fn copy_sparse(src: &mut dyn Read, dst: &mut File, mut seen: impl FnMut(&[u8])) -> Result<u64> {
     mark_sparse(dst);
     let mut buf = vec![0u8; COPY];
     let mut len = 0u64;

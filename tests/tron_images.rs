@@ -24,7 +24,12 @@ fn a_real_tron_backup_passes() {
         .unwrap();
     let boot = std::fs::read(env("TRON_BOOT")).unwrap();
     let known = tables::parse(tables::SHIPPED).unwrap();
-    let c = check(&start, &boot, &env("TRON_ROOTFS"), &known);
+    let c = check(
+        &start,
+        &boot,
+        mowbite_installer::tron::rootfs::open(&env("TRON_ROOTFS"), 0),
+        &known,
+    );
     for f in &c.findings {
         eprintln!("{f:?}");
     }

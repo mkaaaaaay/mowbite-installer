@@ -12,6 +12,7 @@ pub mod module;
 pub mod pack;
 pub mod port;
 pub mod rootfs;
+pub mod seekable;
 pub mod tables;
 pub mod texts;
 pub mod usb;
