@@ -12,6 +12,63 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const COPY: usize = 8 << 20;
+/// Zero runs of this size in a work image are left as holes instead of written.
+const SPARSE_BLOCK: usize = 64 << 10;
+static ZEROS: [u8; SPARSE_BLOCK] = [0; SPARSE_BLOCK];
+
+/// Copies `src` into the new, empty file `dst` and leaves zero blocks as holes where the file system supports it;
+/// `seen` gets every byte in order. Returns the length.
+pub(super) fn copy_sparse(
+    src: &mut dyn Read,
+    dst: &mut File,
+    mut seen: impl FnMut(&[u8]),
+) -> Result<u64> {
+    mark_sparse(dst);
+    let mut buf = vec![0u8; COPY];
+    let mut len = 0u64;
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        seen(&buf[..n]);
+        for block in buf[..n].chunks(SPARSE_BLOCK) {
+            if block == &ZEROS[..block.len()] {
+                dst.seek(SeekFrom::Current(block.len() as i64))?;
+            } else {
+                dst.write_all(block)?;
+            }
+        }
+        len += n as u64;
+    }
+    dst.set_len(len)?;
+    Ok(len)
+}
+
+/// NTFS keeps holes only in files marked sparse; where marking fails the skipped blocks are filled with zeros.
+#[cfg(windows)]
+fn mark_sparse(file: &File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+    let mut returned = 0u32;
+    // SAFETY: a valid open handle, no buffers, synchronous call.
+    unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn mark_sparse(_: &File) {}
 
 /// Bytes the base image reserves for the pack, over all its pieces.
 pub fn room(base: &BaseImage) -> u64 {
@@ -38,20 +95,11 @@ pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<Str
         .open(out)
         .with_context(|| format!("create {}", out.display()))?;
     let mut hash = Sha256::new();
-    let mut buf = vec![0u8; COPY];
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-        dst.write_all(&buf[..n])?;
-    }
+    let len = copy_sparse(&mut src, &mut dst, |b| hash.update(b))?;
     ensure!(
         format!("{:x}", hash.finalize()) == base.sha256,
         "the base image is not the signed one"
     );
-    let len = dst.metadata()?.len();
     ensure!(
         len % SECTOR == 0,
         "the base image is no whole number of sectors"
@@ -179,6 +227,40 @@ mod tests {
             sha256: format!("{:x}", Sha256::digest(&img)),
             path,
             pack: vec![(8192, 2048), (20480, 2048)],
+        }
+    }
+
+    /// Hands out the data in uneven reads, so zero runs do not line up with the copy blocks.
+    struct Uneven<'a>(&'a [u8]);
+    impl Read for Uneven<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.0.len()).min(300_007);
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_sparse_copy_keeps_every_byte_and_skips_zero_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut data = vec![0u8; 24 << 20];
+        data[..100_000].fill(7);
+        data[12 << 20] = 1;
+        data[(12 << 20) + SPARSE_BLOCK + 3] = 2;
+        let path = dir.path().join("out.img");
+        let mut out = File::create_new(&path).unwrap();
+        let mut seen = Sha256::new();
+        let len = copy_sparse(&mut Uneven(&data), &mut out, |b| seen.update(b)).unwrap();
+        drop(out);
+        assert_eq!(len, data.len() as u64);
+        assert_eq!(seen.finalize(), Sha256::digest(&data));
+        assert_eq!(std::fs::read(&path).unwrap(), data);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let stored = std::fs::metadata(&path).unwrap().blocks() * 512;
+            assert!(stored < 2 << 20, "{stored} bytes stored");
         }
     }
 

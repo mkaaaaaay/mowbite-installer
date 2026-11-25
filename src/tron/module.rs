@@ -16,8 +16,9 @@ const META_MAX_BYTES: u64 = 256 << 20;
 
 /// Packed backup of a Tron: 19.5 GB measured on ours (62.6 GB flash), with room.
 const BACKUP_BYTES: u64 = 25_000_000_000;
-/// The unpacked vendor rootfs (16 GiB partition) for the checks plus the new rootfs image.
-const WORK_BYTES: u64 = 2 * 17_179_869_184;
+/// One rootfs partition (16 GiB): the unpacked vendor rootfs and the new image are never there together, and
+/// zero blocks stay holes, so this is the bound where the file system keeps none.
+const WORK_BYTES: u64 = 17_179_869_184;
 /// Room in the pack for the vendor parts and the small files: 25.4 MB measured on ours, with room.
 const VENDOR_ROOM: u64 = 64 << 20;
 
@@ -124,12 +125,13 @@ fn unpacked_rootfs(ctx: &Ctx<'_>, b: &Backup) -> Result<(PathBuf, Removes)> {
     let tmp = path.with_extension("part");
     let tmp_guard = Removes(Some(tmp.clone()));
     let mut out = create_private(&tmp)?;
-    std::io::copy(&mut open_raw(ctx.store, &file_name("rootfs"))?, &mut out)?;
+    let len = image::copy_sparse(
+        &mut open_raw(ctx.store, &file_name("rootfs"))?,
+        &mut out,
+        |_| {},
+    )?;
     out.sync_all()?;
-    ensure!(
-        out.metadata()?.len() == want,
-        "the saved rootfs has the wrong size"
-    );
+    ensure!(len == want, "the saved rootfs has the wrong size");
     std::fs::rename(&tmp, &path)?;
     tmp_guard.keep();
     Ok((path.clone(), Removes(Some(path))))
@@ -282,6 +284,8 @@ impl<P: Port> Mower for Tron<P> {
             .as_secs();
         let archive = contents::build(&vendor, &known, inputs, mtime)?;
         drop(vendor);
+        // Gone before the new image is made: the work folder never holds both.
+        drop(removes_vendor);
         let filled = pack::pack(archive, image::room(base))?;
         let out = ctx.work.path.join("mowbite-rootfs.img");
         if out.exists() {
@@ -289,7 +293,6 @@ impl<P: Port> Mower for Tron<P> {
         }
         let removes_out = Removes(Some(out.clone()));
         let sha256 = image::fill_base(base, &filled, &out)?;
-        drop(removes_vendor);
         let rootfs = part(&b.table, "rootfs")?;
         let plan = WritePlan {
             partition: rootfs.name.clone(),
