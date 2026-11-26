@@ -206,6 +206,27 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "The installer does not know this vendor software version. It can go on anyway.",
     ),
     (
+        "tron.before",
+        "Vorher: Herstellersoftware 1.3.32 oder 1.3.33 auf der Tron, Akku mindestens halb voll, etwa 41 GB frei für \
+         diesen Ordner. Der Installer schreibt nie in die Bereiche, aus denen die Tron startet. Er sichert zuerst den \
+         ganzen Speicher, die Startbereiche und den Systembereich doppelt; das Zurückschreiben des Herstellersystems \
+         (back) ist unter Linux erprobt. Schlimmster Fall: der Systembereich ist nur zum Teil geschrieben. Dann den \
+         Installer mit diesem Sicherungsordner neu starten, er bietet erneut schreiben oder zurück an; klappt das \
+         unter Windows nicht, back von einem Linux-PC.",
+        "Before you start: vendor software 1.3.32 or 1.3.33 on the Tron, its battery at least half full, about 41 GB \
+         free for this folder. The installer never writes the areas the Tron starts from. It first saves the whole \
+         flash, the start areas and the system area twice; writing the vendor system back (back) was tested on \
+         Linux. Worst case: the system area is written only in part. Then start the installer again with this backup \
+         folder, it offers to write again or to go back; should that fail on Windows, run back from a Linux PC.",
+    ),
+    (
+        "tron.backup",
+        "Der Installer sichert den ganzen Speicher der Tron, die Bereiche zum Starten und den Systembereich doppelt. Das dauert etwa 30 bis \
+         55 Minuten; die Tron bleibt dabei angeschlossen und eingeschaltet. Auf die Tron wird nichts geschrieben.",
+        "The installer saves the whole flash of the Tron, the areas it starts from and its system area twice. This takes about 30 to 55 \
+         minutes; the Tron stays connected and switched on. Nothing is written to the Tron.",
+    ),
+    (
         "tron.check_system",
         "Der Installer prüft das gesicherte System der Tron. Das dauert ein paar Minuten, ohne Anzeige.",
         "The installer checks the saved system of the Tron. This takes a few minutes, without a display.",

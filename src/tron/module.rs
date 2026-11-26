@@ -170,6 +170,10 @@ impl<P: Port> Mower for Tron<P> {
         texts::TEXTS
     }
 
+    fn before(&self) -> &'static str {
+        "tron.before"
+    }
+
     fn space_needed(&self) -> Space {
         Space {
             backup_bytes: BACKUP_BYTES,
@@ -238,6 +242,7 @@ impl<P: Port> Mower for Tron<P> {
 
     async fn backup(&self, dev: &mut Self::Device, ctx: &mut Ctx<'_>) -> Result<Backup> {
         let table = read_table(&mut dev.disk).await?;
+        ctx.progress.step("tron.backup");
         let files =
             backup::backup(&mut dev.disk, &table, ctx.store, ctx.cancel, ctx.progress).await?;
         dev.compared = true;

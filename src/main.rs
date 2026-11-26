@@ -1,16 +1,21 @@
-//! The installer in text mode: mowbite-installer install|back <backup folder> <release folder>.
+//! The installer in text mode: mowbite-installer install|check|back <backup folder> [<release folder>].
 
 use anyhow::{Context, Result};
 use mowbite_installer::sign::Signers;
+use mowbite_installer::text::Bar;
 use mowbite_installer::tron::module::Tron;
 use mowbite_installer::tron::port::UsbPort;
 use mowbite_installer::tron::tables;
-use mowbite_installer::{cli, release};
+use mowbite_installer::{cli, fetch, release};
 use std::process::ExitCode;
 
 async fn run(list: &[String]) -> Result<bool> {
     let args = cli::parse(list)?;
     let signers = Signers::builtin();
+    if args.download {
+        let bar = Bar::new(mowbite_installer::tron::texts::TEXTS);
+        fetch::fetch(&fetch::Https::new(), &signers, "tron", &args.release, &bar)?;
+    }
     let tables = cli::tables(&args.release, &signers, "tron")?;
     let named = tables::loader(&tables.raw)?;
     let path = cli::release_file(&args.release, &named.file)?;

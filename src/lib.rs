@@ -3,6 +3,7 @@
 pub mod awake;
 pub mod cli;
 pub mod disk;
+pub mod fetch;
 pub mod mower;
 pub mod net;
 pub mod release;

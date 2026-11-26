@@ -197,6 +197,20 @@ pub struct Inputs {
     pub bundles: Vec<Bundle>,
 }
 
+impl Inputs {
+    /// Nothing typed and nothing loaded: for back, and for check beside its bundles.
+    pub fn none() -> Self {
+        Inputs {
+            wifi_name: String::new(),
+            wifi_key: Secret::new(String::new()),
+            device_name: String::new(),
+            setup_wifi_key: Secret::new(String::new()),
+            install_id: Secret::new(String::new()),
+            bundles: Vec::new(),
+        }
+    }
+}
+
 /// A file for the inbox with its sha256 when its signature was checked.
 pub struct Bundle {
     pub path: PathBuf,
@@ -237,6 +251,10 @@ pub trait Mower {
     fn guide(&self) -> Guide;
     /// (key, de, en)
     fn texts(&self) -> &'static [(&'static str, &'static str, &'static str)];
+    /// Code of the text the owner reads before anything happens: what the mower needs and the risks; empty for none.
+    fn before(&self) -> &'static str {
+        ""
+    }
     fn space_needed(&self) -> Space;
     /// Name and key of the home Wi-Fi by the rules of this mower, checked while the owner types them.
     fn check_wifi(&self, _name: &str, _key: &str) -> Result<()> {

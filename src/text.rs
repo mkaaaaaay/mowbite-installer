@@ -63,7 +63,8 @@ impl Owner for Terminal {
             print!(
                 "{} Write MowBite OS again (w) or go back to the vendor system (b)? ",
                 match goal {
-                    Goal::Install => "The system on the mower is not complete or did not start.",
+                    Goal::Install | Goal::Check =>
+                        "The system on the mower is not complete or did not start.",
                     Goal::Back => "Writing the vendor system back did not finish.",
                 }
             );
@@ -83,28 +84,30 @@ impl Owner for Terminal {
     }
 }
 
-/// Progress on stderr in percent of the step, at most once a second.
+/// Progress on stderr: the step with its text, then percent of the step, at most once a second.
 pub struct Bar {
     last: std::cell::Cell<Option<Instant>>,
+    texts: &'static [(&'static str, &'static str, &'static str)],
 }
 
 impl Bar {
-    pub fn new() -> Self {
+    /// texts of the mower module; the frame's own come on top.
+    pub fn new(texts: &'static [(&'static str, &'static str, &'static str)]) -> Self {
         Bar {
             last: std::cell::Cell::new(None),
+            texts,
         }
-    }
-}
-
-impl Default for Bar {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 impl Progress for Bar {
     fn step(&self, code: &'static str) {
-        eprintln!("== {code}");
+        let text = text_of(STEPS, text_of(self.texts, code));
+        if text == code {
+            eprintln!("== {code}");
+        } else {
+            eprintln!("== {code}\n   {text}");
+        }
     }
 
     fn bytes(&self, done: u64, total: u64) {
@@ -158,8 +161,23 @@ fn german() -> bool {
         .is_some_and(|v| v.starts_with("de"))
 }
 
+/// Steps of the frame: (key, de, en).
+const STEPS: &[(&str, &str, &str)] = &[
+    (
+        "release.download",
+        "Der Installer lädt die Dateien der neuesten Version von GitHub (etwa 220 MB) und prüft ihre Signaturen.",
+        "The installer downloads the files of the newest release from GitHub (about 220 MB) and checks their \
+         signatures.",
+    ),
+    (
+        "release.check_base",
+        "Der Installer prüft das Grundsystem, ein paar Minuten.",
+        "The installer checks the base system, a few minutes.",
+    ),
+];
+
 /// The text of a code, or the code when the module has none.
-fn text_of<'a>(texts: &[(&str, &'a str, &'a str)], code: &'a str) -> &'a str {
+pub fn text_of<'a>(texts: &[(&str, &'a str, &'a str)], code: &'a str) -> &'a str {
     texts
         .iter()
         .find(|(key, _, _)| *key == code)
@@ -241,7 +259,7 @@ pub async fn run<M: Mower, F: FirstStart>(
         }
     };
     let log = FileLog::new(store);
-    let bar = Bar::new();
+    let bar = Bar::new(texts);
     let mut waiting_since: Option<Instant> = None;
     let leave = |driver: &mut Driver<'_, M>, owner: &dyn Owner| -> Result<bool> {
         owner.say(if driver.leave()? {
@@ -380,9 +398,19 @@ pub async fn run<M: Mower, F: FirstStart>(
                 show(owner, texts, &findings);
                 return leave(&mut driver, owner);
             }
+            Next::Checked(findings) => {
+                owner.say("Backup and checks are done, nothing was written to the mower.");
+                show(owner, texts, &findings);
+                owner.say(&format!(
+                    "To install MowBite OS, start the installer with install and this backup folder ({}): it goes \
+                     on from this backup.",
+                    root.display()
+                ));
+                return Ok(true);
+            }
             Next::Done => {
                 owner.say(match driver.run.goal {
-                    Goal::Install => "Done: MowBite OS runs on the mower.",
+                    Goal::Install | Goal::Check => "Done: MowBite OS runs on the mower.",
                     Goal::Back => "Done: the vendor system is back on the mower.",
                 });
                 return Ok(true);
@@ -485,6 +513,46 @@ mod tests {
         let log = std::fs::read_to_string(w.store.root().join("run.log")).unwrap();
         assert!(log.contains("first_start_wait not found"));
         assert!(!log.contains("geheim123"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check_saves_and_checks_without_writing_and_install_goes_on_from_its_backup() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        *fake.findings.borrow_mut() = vec![Finding::Warn {
+            code: "tron.vendor_unknown".into(),
+            details: "1.3.40".into(),
+        }];
+        let owner = Script::default();
+        let first = Confirms(RefCell::new(vec![]));
+        let checked = run(
+            &fake,
+            &mut w.store,
+            &w.work,
+            &w.tables,
+            &w.base,
+            &w.inputs,
+            Goal::Check,
+            &first,
+            &owner,
+            &w.cancel,
+        )
+        .await
+        .unwrap();
+        assert!(checked);
+        assert_eq!((fake.ran("backup"), fake.ran("check")), (1, 1));
+        assert_eq!((fake.ran("prepare"), fake.ran("write")), (0, 0));
+        assert!(
+            owner
+                .said
+                .borrow()
+                .iter()
+                .any(|s| s.contains("nothing was written"))
+        );
+        owner.yes.set(true);
+        assert!(go(&mut w, &fake, &owner, vec![]).await.unwrap());
+        assert_eq!((fake.ran("backup"), fake.ran("check")), (1, 2));
+        assert_eq!(fake.ran("write"), 1);
     }
 
     #[tokio::test(start_paused = true)]

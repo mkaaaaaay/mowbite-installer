@@ -25,6 +25,7 @@ tar = { version = "0.4", default-features = false }
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "std"] }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 zstd = "0.13"
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 tempfile = "3"

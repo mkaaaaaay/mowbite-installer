@@ -1,5 +1,6 @@
-//! The command line of the text mode: install or back, the backup folder and the folder with the release files.
-//! Loads the release files against the built-in keys and asks the owner for the Wi-Fi.
+//! The command line of the text mode: install, check or back, the backup folder and the folder with the release
+//! files, which the installer downloads into the backup folder when none is given. Loads the release files against
+//! the built-in keys and asks the owner for the Wi-Fi.
 
 use crate::mower::{BaseImage, Bundle, Inputs, Mower, Progress, Tables, WorkDir};
 use crate::net::Confirm;
@@ -15,8 +16,11 @@ use sha2::Digest;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str =
-    "usage: mowbite-installer install|back <backup folder> <release folder> [--work <folder>]";
+pub const USAGE: &str = "usage: mowbite-installer install|check|back <backup folder> [<release folder>] [--work <folder>]\n\
+     check saves the mower and checks it, it writes nothing. Without a release folder the installer downloads the \
+     newest release into the backup folder.";
+/// The release folder inside the backup folder when the installer downloads it.
+pub const DOWNLOADED: &str = "release";
 
 /// What a new system takes from its inbox: one bundle each.
 const BUNDLES: [&str; 3] = ["os", "planner", "app"];
@@ -31,6 +35,8 @@ pub struct Args {
     pub goal: Goal,
     pub store: PathBuf,
     pub release: PathBuf,
+    /// The release folder is DOWNLOADED in the backup folder, filled from the release repo.
+    pub download: bool,
     /// Holds the work images with keys; emptied after the read back. Default: work in the backup folder.
     pub work: PathBuf,
 }
@@ -46,20 +52,23 @@ pub fn parse(args: &[String]) -> Result<Args> {
             _ => plain.push(arg),
         }
     }
-    let [goal, store, release] = plain.as_slice() else {
-        bail!(USAGE);
+    let (goal, store, release) = match plain.as_slice() {
+        [goal, store] => (goal, PathBuf::from(store), None),
+        [goal, store, release] => (goal, PathBuf::from(store), Some(PathBuf::from(release))),
+        _ => bail!(USAGE),
     };
     let goal = match goal.as_str() {
         "install" => Goal::Install,
+        "check" => Goal::Check,
         "back" => Goal::Back,
         _ => bail!(USAGE),
     };
-    let store = PathBuf::from(store);
     Ok(Args {
         goal,
         work: work.unwrap_or_else(|| store.join("work")),
+        download: release.is_none(),
+        release: release.unwrap_or_else(|| store.join(DOWNLOADED)),
         store,
-        release: PathBuf::from(release),
     })
 }
 
@@ -111,22 +120,7 @@ pub fn base(
 
 /// The base number an OS bundle needs, from its bundle.json; None when it names none.
 pub fn os_needs_base(bundle: &Path) -> Result<Option<u32>> {
-    let file = std::fs::File::open(bundle).with_context(|| bundle.display().to_string())?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.into_owned();
-        if path.components().count() == 2 && path.file_name() == Some("bundle.json".as_ref()) {
-            let meta: serde_json::Value = serde_json::from_reader(&mut entry)
-                .with_context(|| format!("bundle.json of {}", bundle.display()))?;
-            return Ok(meta
-                .get("base")
-                .and_then(serde_json::Value::as_u64)
-                .map(u32::try_from)
-                .transpose()?);
-        }
-    }
-    bail!("{} has no bundle.json", bundle.display())
+    Ok(crate::fetch::needs(bundle)?.base)
 }
 
 /// The bundles for the inbox, each checked against its component's key; each comes with its .sig, which the
@@ -265,14 +259,17 @@ pub async fn run<M: Mower>(
     );
     let mut store = Store::open(&args.store)?;
     crate::store::private_dir(&args.work)?;
+    if !mower.before().is_empty() {
+        println!("{}", text::text_of(mower.texts(), mower.before()));
+    }
     let space = mower.space_needed();
-    if args.goal == Goal::Install {
-        crate::space::check(
-            &args.store,
-            space.backup_bytes,
-            &args.work,
-            space.work_bytes,
-        )?;
+    let work_bytes = match args.goal {
+        Goal::Install => space.work_bytes,
+        Goal::Check => 0,
+        Goal::Back => 0,
+    };
+    if args.goal != Goal::Back {
+        crate::space::check(&args.store, space.backup_bytes, &args.work, work_bytes)?;
     }
     println!(
         "The backup in {} holds the whole flash of the mower with its keys and Wi-Fi: keep it to yourself, \
@@ -280,9 +277,10 @@ pub async fn run<M: Mower>(
         args.store.display()
     );
     let (base, inputs) = match args.goal {
-        Goal::Install => {
+        Goal::Install | Goal::Check => {
             println!("Checking the base system in the release folder, this takes a few minutes.");
-            let (base, base_number) = base(&args.release, signers, mower.id(), &Bar::new())?;
+            let (base, base_number) =
+                base(&args.release, signers, mower.id(), &Bar::new(mower.texts()))?;
             let bundles = bundles(&args.release, signers)?;
             if let Some(os) = bundles.first() {
                 if let Some(needs) = os_needs_base(&os.path)? {
@@ -292,21 +290,28 @@ pub async fn run<M: Mower>(
                     );
                 }
             }
-            let setup = setup(&args.store)?;
-            println!(
-                "The mower will be called {}. Should it not find your Wi-Fi, it opens its own; its name and key \
-                 are in {}.",
-                setup.name,
-                args.store.join(SHEET).display()
-            );
-            let (wifi_name, wifi_key) = ask_wifi(mower)?;
-            let inputs = Inputs {
-                wifi_name,
-                wifi_key,
-                device_name: setup.name,
-                setup_wifi_key: setup.key,
-                install_id: setup.install_id,
-                bundles,
+            let inputs = if args.goal == Goal::Check {
+                Inputs {
+                    bundles,
+                    ..Inputs::none()
+                }
+            } else {
+                let setup = setup(&args.store)?;
+                println!(
+                    "The mower will be called {}. Should it not find your Wi-Fi, it opens its own; its name and \
+                     key are in {}.",
+                    setup.name,
+                    args.store.join(SHEET).display()
+                );
+                let (wifi_name, wifi_key) = ask_wifi(mower)?;
+                Inputs {
+                    wifi_name,
+                    wifi_key,
+                    device_name: setup.name,
+                    setup_wifi_key: setup.key,
+                    install_id: setup.install_id,
+                    bundles,
+                }
             };
             mower.check_inputs(&base, &inputs)?;
             (base, inputs)
@@ -318,14 +323,7 @@ pub async fn run<M: Mower>(
                 sha256: String::new(),
                 pack: vec![],
             },
-            Inputs {
-                wifi_name: String::new(),
-                wifi_key: Secret::new(String::new()),
-                device_name: String::new(),
-                setup_wifi_key: Secret::new(String::new()),
-                install_id: Secret::new(String::new()),
-                bundles: Vec::new(),
-            },
+            Inputs::none(),
         ),
     };
     let work = WorkDir {
@@ -367,13 +365,20 @@ mod tests {
                 goal: Goal::Install,
                 store: "b".into(),
                 release: "r".into(),
+                download: false,
                 work: Path::new("b").join("work"),
             }
         );
         let a = args(&["back", "b", "r", "--work", "w"]).unwrap();
         assert_eq!((a.goal, a.work), (Goal::Back, PathBuf::from("w")));
+        let a = args(&["check", "b"]).unwrap();
+        assert_eq!(
+            (a.goal, a.release, a.download),
+            (Goal::Check, Path::new("b").join(DOWNLOADED), true)
+        );
         for bad in [
-            &["install", "b"][..],
+            &["install"][..],
+            &["install", "b", "r", "x"],
             &["remove", "b", "r"],
             &["install", "b", "r", "--yes"],
             &["install", "b", "r", "--work"],

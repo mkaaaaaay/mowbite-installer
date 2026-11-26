@@ -27,7 +27,9 @@ browser on a phone or computer, or use the Android app.
 
 ## What it does
 
-1. **Checks the PC**: room for the backup and the work files.
+1. **Gets the release**: downloads the newest signed release from
+   [mowbite-releases](https://github.com/mkaaaaaay/mowbite-releases) into the backup folder (about 220 MB), unless
+   you give it a release folder. Then checks the PC: room for the backup and the work files.
 2. **Finds the Tron** in its USB mode. On Windows it sets up the WinUSB driver once, if the Tron has none yet.
 3. **Backs it up**: the whole flash once, the system and every boot area a second time, compared by sha256. A backup
    that was started is resumed, never replaced.
@@ -48,7 +50,8 @@ belongs to this mower.
 
 ## What you need
 
-- A PC with Windows 10 or 11 (x64) or Linux (x86_64).
+- A PC with Windows 10 or 11 (x64) or Linux (x86_64), with internet for the download.
+- The Tron on vendor software 1.3.32 or 1.3.33. The installer checks it before writing.
 - Free space: about 25 GB for the backup and 16 GB for work files. Both can be on an external disk.
 - A USB-C data cable.
 - The Tron with its battery at least half full, off its charging station.
@@ -62,29 +65,39 @@ belongs to this mower.
 
 ## Use it
 
-Download the installer for your PC from the releases of this repo, and the release folder with the signed system,
-bundles and tables. Then, in a terminal:
+Download the installer for your PC from the releases of this repo. Then, in a terminal:
 
 ```
-mowbite-installer install <backup folder> <release folder> [--work <folder>]
-mowbite-installer back <backup folder> <release folder>
+mowbite-installer check <backup folder>
+mowbite-installer install <backup folder> [--work <folder>]
+mowbite-installer back <backup folder>
 ```
 
-The installer asks for your Wi-Fi and then shows how to connect the Tron:
+`check` is a safe first step: it makes the backup and runs every check, then ends without writing anything to the
+mower. `install` with the same backup folder goes on from that backup. Each command downloads the release files into
+`<backup folder>/release`; to use files you already have, give their folder after the backup folder.
+
+The installer asks for your Wi-Fi (not on `check`) and then shows how to connect the Tron:
 
 1. Battery in, Tron off and not on its charging station.
 2. Take off the upper camera unit. A USB-C socket sits behind it.
 3. Connect the cable from this socket to the PC.
 4. Hold button B and switch the Tron on. Let go when the installer sees the Tron.
 
-From there it runs by itself and keeps the PC awake. Plan for one to two hours. If it stops, start it again with the
-same folders and it goes on where it was.
+From there it runs by itself and keeps the PC awake. The backup alone takes about 30 to 55 minutes; plan for one to
+two hours in all. If it stops, start it again with the same folders and it goes on where it was.
 
 On Windows the WinUSB step shows a Windows prompt for permission. It uses
 [libwdi](https://github.com/pbatard/libwdi) like Zadig does: `mowbite-usb-driver.exe` and `libwdi.dll` have to sit
 next to `mowbite-installer.exe`.
 
 ## Safety and your data
+
+What can go wrong: the installer never writes the areas the Tron starts from, so the USB mode it uses stays
+reachable. The backup holds the start areas and the system area twice. Writing the vendor system back (`back`) has
+been tested on Linux. The worst case is a system area written only in part, for example when the cable comes off
+while writing: start the installer again with the same backup folder, it offers to write again or to go back. Should
+that fail on Windows, run `back` from a Linux PC.
 
 - **Keep the backup to yourself.** It holds the whole flash of your mower with its keys and your Wi-Fi. Do not share
   it, and keep it until you are sure you will not go back.

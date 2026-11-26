@@ -11,7 +11,7 @@ use crate::mower::{
     WrittenNotRestarted,
 };
 use crate::store::Store;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -24,6 +24,8 @@ const VERSION: u32 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Goal {
     Install,
+    /// Backup and checks only, nothing is written; install later goes on from the backup.
+    Check,
     Back,
 }
 
@@ -183,6 +185,8 @@ pub enum Next {
     /// The mower left USB mode: the frame finds it on the network and confirms its start.
     Network,
     Stopped(Vec<Finding>),
+    /// check: backup and checks are done, nothing was written; the findings for the owner.
+    Checked(Vec<Finding>),
     Done,
 }
 
@@ -204,6 +208,11 @@ impl<'m, M: Mower> Driver<'m, M> {
         };
         let run = match kept {
             Some(run) if run.mower != mower.id() => bail!("this backup belongs to a {}", run.mower),
+            Some(run) if run.writing && goal == Goal::Check => {
+                bail!(
+                    "the system on the mower is not complete: start install or back with this backup folder"
+                )
+            }
             Some(run) => run.resumed(goal),
             None => Run::new(mower.id(), goal),
         };
@@ -271,6 +280,10 @@ impl<'m, M: Mower> Driver<'m, M> {
                     self.to(Step::Stopped)?;
                     return Ok(Next::Stopped(self.run.findings.clone()));
                 }
+                if self.run.goal == Goal::Check {
+                    self.to(Step::Done)?;
+                    return Ok(Next::Checked(self.run.findings.clone()));
+                }
                 self.to(Step::Agree)?;
                 Ok(Next::Go)
             }
@@ -333,8 +346,8 @@ impl<'m, M: Mower> Driver<'m, M> {
         let next = match (self.run.goal, self.run.backup.is_some()) {
             (Goal::Back, _) => Step::Write,
             (Goal::Install, _) if self.run.writing && prepared => Step::Write,
-            (Goal::Install, true) => Step::Check,
-            (Goal::Install, false) => Step::Backup,
+            (Goal::Install | Goal::Check, true) => Step::Check,
+            (Goal::Install | Goal::Check, false) => Step::Backup,
         };
         self.to(next)?;
         Ok(Next::Go)
@@ -345,6 +358,7 @@ impl<'m, M: Mower> Driver<'m, M> {
             self.to(Step::Connect)?;
             return Ok(Next::Connect);
         };
+        ensure!(self.run.goal != Goal::Check, "check never writes");
         let was_writing = self.run.writing;
         self.run.writing = true;
         self.run.save(&self.root)?;
@@ -357,6 +371,7 @@ impl<'m, M: Mower> Driver<'m, M> {
                 let backup = self.run.backup.as_ref().expect("the backup of this mower");
                 (self.mower.back(dev, backup, ctx).await, Step::Done)
             }
+            Goal::Check => unreachable!("refused above"),
         };
         match result {
             Ok(()) => {
