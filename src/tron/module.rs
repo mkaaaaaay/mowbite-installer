@@ -324,11 +324,12 @@ impl<P: Port> Mower for Tron<P> {
     }
 
     async fn back(&self, mut dev: Self::Device, b: &Backup, ctx: &mut Ctx<'_>) -> Result<()> {
+        ctx.progress.step("tron.check_backup");
         let table = read_table(&mut dev.disk).await.context(NothingWritten)?;
         back::belongs_here(&mut dev.disk, &table, b)
             .await
             .context(NothingWritten)?;
-        let (plan, mut src) = back::plan(ctx.store, b).context(NothingWritten)?;
+        let (plan, mut src) = back::plan(ctx.store, b, ctx.progress).context(NothingWritten)?;
         let disk =
             image::write_and_verify(dev.disk, &mut src, &plan, ctx.cancel, ctx.progress).await?;
         self.port.restart(disk).await.context(WrittenNotRestarted)

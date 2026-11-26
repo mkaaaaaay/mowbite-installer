@@ -141,8 +141,8 @@ pub fn open_seekable(store: &Store, name: &str) -> Result<SeekableReader> {
     })
 }
 
-pub fn raw_sha256(store: &Store, name: &str) -> Result<String> {
-    unpacked_sha256(open_raw(store, name)?, &mut |_| {})
+pub fn raw_sha256(store: &Store, name: &str, done: &mut dyn FnMut(u64)) -> Result<String> {
+    unpacked_sha256(open_raw(store, name)?, done)
 }
 
 fn unpacked_sha256(mut raw: impl Read, done: &mut dyn FnMut(u64)) -> Result<String> {

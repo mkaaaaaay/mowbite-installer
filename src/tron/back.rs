@@ -3,7 +3,7 @@
 
 use super::backup::{Area, areas, file_name, open_raw, raw_sha256, read_area};
 use crate::disk::Disk;
-use crate::mower::{Backup, Cancel, Part, WritePlan};
+use crate::mower::{Backup, Cancel, Part, Progress, WritePlan};
 use crate::store::Store;
 use anyhow::{Context, Result, ensure};
 
@@ -52,7 +52,11 @@ pub async fn belongs_here<D: Disk>(
 
 /// The plan that writes the saved rootfs back and its unpacked bytes; the file is checked against SHA256SUMS and
 /// its raw sha256 against the backup before anything is written.
-pub fn plan(store: &Store, backup: &Backup) -> Result<(WritePlan, impl std::io::Read + use<>)> {
+pub fn plan(
+    store: &Store,
+    backup: &Backup,
+    progress: &dyn Progress,
+) -> Result<(WritePlan, impl std::io::Read + use<>)> {
     let part = backup
         .table
         .iter()
@@ -64,11 +68,17 @@ pub fn plan(store: &Store, backup: &Backup) -> Result<(WritePlan, impl std::io::
         .iter()
         .find(|(f, _)| *f == file)
         .with_context(|| format!("{file} is not in the backup"))?;
+    let sectors = part.last_sector - part.first_sector + 1;
+    let total = sectors * 512;
+    let mut done = 0;
+    let unpacked = raw_sha256(store, &file, &mut |n| {
+        done += n;
+        progress.bytes(done.min(total), total);
+    })?;
     ensure!(
-        raw_sha256(store, &file)? == *sha256,
+        unpacked == *sha256,
         "{file} does not unpack to the rootfs that was saved"
     );
-    let sectors = part.last_sector - part.first_sector + 1;
     let plan = WritePlan {
         partition: part.name.clone(),
         first_sector: part.first_sector,
@@ -137,7 +147,7 @@ mod tests {
 
         let mut disk = FileDisk::open(&flash, vec![]).unwrap();
         belongs_here(&mut disk, &table(), &b).await.unwrap();
-        let (plan, mut src) = plan(&store, &b).unwrap();
+        let (plan, mut src) = plan(&store, &b, &Quiet).unwrap();
         write_and_verify(disk, &mut src, &plan, &Cancel::default(), &Quiet)
             .await
             .unwrap();
@@ -165,7 +175,7 @@ mod tests {
         assert!(belongs_here(&mut disk, &t, &b).await.is_err());
 
         std::fs::write(store.path("rootfs.img.zst").unwrap(), vec![0u8; 120 * 512]).unwrap();
-        let Err(err) = plan(&store, &b) else {
+        let Err(err) = plan(&store, &b, &Quiet) else {
             panic!("a changed backup file passed");
         };
         assert!(
