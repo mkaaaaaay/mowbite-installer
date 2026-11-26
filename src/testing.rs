@@ -96,7 +96,13 @@ impl Mower for Fake {
             fingerprint: vec![],
         })
     }
-    async fn check(&self, _: &mut (), _: &Backup, _: &mut Ctx<'_>) -> Result<Vec<Finding>> {
+    async fn check(
+        &self,
+        _: &mut (),
+        _: &Backup,
+        _: &Inputs,
+        _: &mut Ctx<'_>,
+    ) -> Result<Vec<Finding>> {
         self.calls.borrow_mut().push("check");
         Ok(self.findings.borrow().clone())
     }

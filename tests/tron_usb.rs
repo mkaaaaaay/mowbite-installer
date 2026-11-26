@@ -1,9 +1,13 @@
 //! Find, open, back up and check a real Tron over USB; nothing is written to its flash. The Tron is in maskrom
 //! mode or in the loader mode of U-Boot. Run with
-//! TRON_LOADER=<Rockchip boot file> TRON_STORE=<folder for the backup> TRON_WORK=<work folder>
+//! TRON_LOADER=<Rockchip boot file> TRON_OS_BUNDLE=<mowbite-os-….tar.gz of the release>
+//! TRON_STORE=<folder for the backup> TRON_WORK=<work folder>
 //! cargo test --release --test tron_usb -- --ignored --nocapture
 
-use mowbite_installer::mower::{Cancel, Ctx, Log, Mower, Progress, Tables, WorkDir};
+use mowbite_installer::mower::{
+    Bundle, Cancel, Ctx, Inputs, Log, Mower, Progress, Tables, WorkDir,
+};
+use mowbite_installer::secret::Secret;
 use mowbite_installer::store::Store;
 use mowbite_installer::tron::module::Tron;
 use mowbite_installer::tron::port::{Port, UsbPort};
@@ -33,6 +37,21 @@ impl Progress for Print {
 impl Log for Print {
     fn info(&self, code: &'static str, details: &str) {
         eprintln!("log {code} {details}");
+    }
+}
+
+/// The release's MowBite OS bundle (TRON_OS_BUNDLE): the checks read its board firmware lists.
+fn os_bundle() -> Inputs {
+    Inputs {
+        wifi_name: String::new(),
+        wifi_key: Secret::new(String::new()),
+        device_name: String::new(),
+        setup_wifi_key: Secret::new(String::new()),
+        install_id: Secret::new(String::new()),
+        bundles: vec![Bundle {
+            path: env("TRON_OS_BUNDLE"),
+            sha256: String::new(),
+        }],
     }
 }
 
@@ -86,7 +105,11 @@ async fn a_tron_on_usb_backs_up_and_is_checked() {
     for (file, sum) in &backup.files {
         eprintln!("{file} {sum}");
     }
-    for f in tron.check(&mut dev, &backup, &mut ctx).await.unwrap() {
+    for f in tron
+        .check(&mut dev, &backup, &os_bundle(), &mut ctx)
+        .await
+        .unwrap()
+    {
         eprintln!("{f:?}");
     }
     eprintln!("checks done after {} s", print.start.elapsed().as_secs());

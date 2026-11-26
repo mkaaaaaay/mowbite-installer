@@ -1,8 +1,12 @@
 //! Open, back up and check a whole saved Tron flash, opened read only, as the installer does over USB. Run with
-//! TRON_FLASH=<flash image> TRON_STORE=<empty folder for the backup> TRON_WORK=<work folder>
+//! TRON_FLASH=<flash image> TRON_OS_BUNDLE=<mowbite-os-….tar.gz of the release>
+//! TRON_STORE=<empty folder for the backup> TRON_WORK=<work folder>
 //! cargo test --release --test tron_flash -- --ignored --nocapture
 
-use mowbite_installer::mower::{Cancel, Ctx, Finding, Log, Mower, Progress, Tables, WorkDir};
+use mowbite_installer::mower::{
+    Bundle, Cancel, Ctx, Finding, Inputs, Log, Mower, Progress, Tables, WorkDir,
+};
+use mowbite_installer::secret::Secret;
 use mowbite_installer::store::Store;
 use mowbite_installer::tron::module::Tron;
 use mowbite_installer::tron::port::{FilePort, Port};
@@ -32,6 +36,21 @@ impl Progress for Print {
 impl Log for Print {
     fn info(&self, code: &'static str, details: &str) {
         eprintln!("log {code} {details}");
+    }
+}
+
+/// The release's MowBite OS bundle (TRON_OS_BUNDLE): the checks read its board firmware lists.
+fn os_bundle() -> Inputs {
+    Inputs {
+        wifi_name: String::new(),
+        wifi_key: Secret::new(String::new()),
+        device_name: String::new(),
+        setup_wifi_key: Secret::new(String::new()),
+        install_id: Secret::new(String::new()),
+        bundles: vec![Bundle {
+            path: env("TRON_OS_BUNDLE"),
+            sha256: String::new(),
+        }],
     }
 }
 
@@ -85,7 +104,10 @@ async fn a_saved_tron_flash_backs_up_and_passes() {
     for (file, sum) in &backup.files {
         eprintln!("{file} {sum}");
     }
-    let findings = tron.check(&mut dev, &backup, &mut ctx).await.unwrap();
+    let findings = tron
+        .check(&mut dev, &backup, &os_bundle(), &mut ctx)
+        .await
+        .unwrap();
     for f in &findings {
         eprintln!("{f:?}");
     }

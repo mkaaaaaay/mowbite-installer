@@ -46,6 +46,28 @@ pub fn vendor_version(rootfs: &Ext4) -> Option<String> {
     .then(|| v.to_string())
 }
 
+/// The firmware the vendor stack of `version` flashes onto a board (mcu_bin folder "chassis" or "cutter") on its
+/// own while it runs: the target of mcu_bin/<board>/latest.bin on the oem partition (mounted as /userdata).
+pub fn board_target(oem: &Ext4, version: &str, board: &str) -> Option<String> {
+    let link = format!("/RobotData/upgrade/{version}/mcu_bin/{board}/latest.bin");
+    let target = oem.read_link(link.as_str()).ok()?;
+    let v = target.to_str().ok()?.strip_suffix(".bin")?;
+    firmware_number(v).map(|_| v.to_string())
+}
+
+/// "0.6.34" as numbers for ordering; None for anything else.
+pub fn firmware_number(v: &str) -> Option<Vec<u32>> {
+    let n: Option<Vec<u32>> = v
+        .split('.')
+        .map(|p| {
+            (!p.is_empty() && p.len() <= 6 && p.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| p.parse().ok())
+                .flatten()
+        })
+        .collect();
+    n.filter(|n| (2..=4).contains(&n.len()))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -125,6 +147,36 @@ mod tests {
         assert_eq!(h.len(), 16);
         assert_eq!(h, serial_hash("sn:1"));
         assert_ne!(h, serial_hash("sn:2"));
+    }
+
+    #[test]
+    fn board_target_from_latest() {
+        let (_d, fs) = fs_of(|t| {
+            let bin = t.join("RobotData/upgrade/v1.3.32-tron.rc.8/mcu_bin");
+            for (board, v) in [
+                ("chassis", "0.6.34"),
+                ("cutter", "0.6.36"),
+                ("battery", "x.y"),
+            ] {
+                std::fs::create_dir_all(bin.join(board)).unwrap();
+                symlink(format!("{v}.bin"), bin.join(board).join("latest.bin")).unwrap();
+            }
+        });
+        let v = "v1.3.32-tron.rc.8";
+        assert_eq!(board_target(&fs, v, "chassis").as_deref(), Some("0.6.34"));
+        assert_eq!(board_target(&fs, v, "cutter").as_deref(), Some("0.6.36"));
+        assert_eq!(board_target(&fs, v, "battery"), None);
+        assert_eq!(board_target(&fs, v, "rtk_rover"), None);
+        assert_eq!(board_target(&fs, "v1.1.1", "chassis"), None);
+    }
+
+    #[test]
+    fn firmware_numbers() {
+        assert_eq!(firmware_number("0.6.34"), Some(vec![0, 6, 34]));
+        assert!(firmware_number("0.6.9") < firmware_number("0.6.34"));
+        for bad in ["", "0", "0.6.", "+0.6.34", "0.6.34-rc", "a.b", "1.2.3.4.5"] {
+            assert_eq!(firmware_number(bad), None, "{bad}");
+        }
     }
 
     #[test]

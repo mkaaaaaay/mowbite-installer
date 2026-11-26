@@ -111,6 +111,43 @@ fn vendor_rootfs(ctx: &Ctx<'_>, b: &Backup) -> Result<ext4_view::Ext4> {
     rootfs::load(read, &name)
 }
 
+/// GPT name of the vendor partition mounted as /userdata.
+const OEM: &str = "oem";
+
+fn saved_fs(ctx: &Ctx<'_>, area: &str) -> Result<ext4_view::Ext4> {
+    let name = file_name(area);
+    rootfs::load(backup::open_seekable(ctx.store, &name)?, &name)
+}
+
+/// Where the MowBite OS bundle keeps the Tron platform file with the measured board firmware.
+const PLATFORM_YAML: &str = "install/platform_tron/share/platform_tron/platform.yaml";
+
+/// The board firmware lists of the MowBite OS bundle in the release: the new system drives with these only.
+fn firmware(inputs: &Inputs) -> Result<checks::Firmware> {
+    let os = inputs
+        .bundles
+        .iter()
+        .map(|b| &b.path)
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("mowbite-os-") && n.ends_with(".tar.gz"))
+        })
+        .context("no MowBite OS bundle in the release")?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(
+        File::open(os).with_context(|| format!("open {}", os.display()))?,
+    ));
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.ends_with(PLATFORM_YAML) {
+            let mut yaml = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut yaml)?;
+            return checks::firmware_lists(&yaml).with_context(|| format!("{}", os.display()));
+        }
+    }
+    anyhow::bail!("{}: no {PLATFORM_YAML}", os.display())
+}
+
 impl<P: Port> Mower for Tron<P> {
     type Device = TronDisk<P::Disk>;
 
@@ -216,6 +253,7 @@ impl<P: Port> Mower for Tron<P> {
         &self,
         dev: &mut Self::Device,
         b: &Backup,
+        inputs: &Inputs,
         ctx: &mut Ctx<'_>,
     ) -> Result<Vec<Finding>> {
         if read_table(&mut dev.disk).await? != b.table {
@@ -243,7 +281,17 @@ impl<P: Port> Mower for Tron<P> {
         let known = tables::parse(&ctx.tables.raw)?;
         let start = saved(ctx.store, "flash-start")?;
         let boot = saved(ctx.store, "boot")?;
-        Ok(checks::check(&start, &boot, vendor_rootfs(ctx, b), &known).findings)
+        let mut c = checks::check(&start, &boot, vendor_rootfs(ctx, b), &known);
+        let version = vendor_rootfs(ctx, b)
+            .ok()
+            .and_then(|fs| identity::vendor_version(&fs));
+        checks::check_firmware(
+            &mut c,
+            saved_fs(ctx, OEM),
+            version.as_deref(),
+            &firmware(inputs)?,
+        );
+        Ok(c.findings)
     }
 
     async fn prepare(
@@ -362,7 +410,7 @@ mod tests {
             ("recovery", 64),
             ("backup", 64),
             ("rootfs", FS),
-            ("oem", 64),
+            ("oem", FS),
             ("userdata", FS),
         ]
         .into_iter()
@@ -396,6 +444,15 @@ mod tests {
         let meta = ext4(dir, "meta", true, |t| {
             std::fs::write(t.join("sn"), "1234567890123456\n").unwrap()
         });
+        // The vendor stack of v1.1.1 flashes the measured board firmware.
+        let oem = ext4(dir, "oem", true, |t| {
+            let bin = t.join("RobotData/upgrade/v1.1.1/mcu_bin");
+            for (board, v) in [("chassis", "0.6.34"), ("cutter", "0.6.36")] {
+                std::fs::create_dir_all(bin.join(board)).unwrap();
+                std::os::unix::fs::symlink(format!("{v}.bin"), bin.join(board).join("latest.bin"))
+                    .unwrap();
+            }
+        });
         let end = parts.last().unwrap().2 + 1 + 34;
         let mut disk = vec![0u8; (end * SECTOR) as usize];
         let entries: Vec<_> = parts
@@ -421,6 +478,7 @@ mod tests {
                 "boot" => &boot,
                 "rootfs" => &rootfs,
                 "userdata" => &meta,
+                "oem" => &oem,
                 _ => &[7u8; 512],
             };
             let at = (*a * SECTOR) as usize;
@@ -462,7 +520,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_and_back_on_a_small_tron() {
-        let mut w = World::new();
+        let mut w = world();
         let (path, section) = flash(w.dir.path());
         w.tables = Tables { raw: section };
         w.base = base(w.dir.path());
@@ -501,6 +559,51 @@ mod tests {
         assert_eq!(next, Next::Done);
     }
 
+    /// An OS bundle whose platform file lists `chassis` for the motor board and 0.6.36 for the blade board.
+    fn os_bundle(dir: &Path, chassis: &str) -> Bundle {
+        let yaml = format!(
+            "tron:\n  ros__parameters:\n    cutter_firmware: [\"0.6.36\"]\n    chassis_firmware: [{chassis}]\n"
+        );
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        let mut h = tar::Header::new_gnu();
+        h.set_size(yaml.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        tar.append_data(
+            &mut h,
+            format!("0123456789ab/{PLATFORM_YAML}"),
+            yaml.as_bytes(),
+        )
+        .unwrap();
+        let gz = tar.into_inner().unwrap().finish().unwrap();
+        let path = dir.join("mowbite-os-0123456789ab.tar.gz");
+        std::fs::write(&path, &gz).unwrap();
+        Bundle {
+            path,
+            sha256: format!("{:x}", Sha256::digest(&gz)),
+        }
+    }
+
+    fn world() -> World {
+        let mut w = World::new();
+        w.inputs.bundles = vec![os_bundle(w.dir.path(), r#""0.6.34""#)];
+        w
+    }
+
+    fn inputs(bundle: Bundle) -> Inputs {
+        Inputs {
+            wifi_name: "Heim".into(),
+            wifi_key: Secret::new("geheim123".into()),
+            device_name: "mowbite-ab12".into(),
+            setup_wifi_key: Secret::new("x".into()),
+            install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),
+            bundles: vec![bundle],
+        }
+    }
+
     fn ctx(w: &mut World) -> Ctx<'_> {
         Ctx {
             store: &mut w.store,
@@ -531,7 +634,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_backup_of_an_earlier_run_is_compared_with_the_tron() {
-        let mut w = World::new();
+        let mut w = world();
         let (path, section) = flash(w.dir.path());
         w.tables = Tables { raw: section };
         let tron = file_tron(&path);
@@ -540,7 +643,11 @@ mod tests {
         let b = tron.backup(&mut dev, &mut ctx(&mut w)).await.unwrap();
         drop(dev);
         let (mut dev, _) = tron.open(&found, &mut ctx(&mut w)).await.unwrap();
-        let found_now = tron.check(&mut dev, &b, &mut ctx(&mut w)).await.unwrap();
+        let listed = inputs(os_bundle(w.dir.path(), r#""0.6.34""#));
+        let found_now = tron
+            .check(&mut dev, &b, &listed, &mut ctx(&mut w))
+            .await
+            .unwrap();
         assert!(
             !found_now.iter().any(|f| matches!(f, Finding::Stop { .. })),
             "{found_now:?}"
@@ -549,12 +656,34 @@ mod tests {
             !w.work.path.exists(),
             "the checks read the backup, nothing goes into the work folder"
         );
+        // The bundle drives with older or newer motor board firmware than the vendor stack flashes.
+        for (chassis, code) in [
+            (r#""0.6.31""#, "warn tron.firmware_new"),
+            (r#""0.6.35", "0.6.40""#, "stop tron.firmware_old"),
+        ] {
+            let other = inputs(os_bundle(w.dir.path(), chassis));
+            let f = tron
+                .check(&mut dev, &b, &other, &mut ctx(&mut w))
+                .await
+                .unwrap();
+            let codes: Vec<String> = f
+                .iter()
+                .filter_map(|f| match f {
+                    Finding::Stop { code, .. } => Some(format!("stop {code}")),
+                    Finding::Warn { code, .. } => Some(format!("warn {code}")),
+                    Finding::Info { .. } => None,
+                })
+                .collect();
+            assert_eq!(codes, [code], "{chassis}");
+        }
         drop(dev);
         // The Tron started its system in between.
         flip_last_rootfs_byte(&path);
         let (mut dev, _) = tron.open(&found, &mut ctx(&mut w)).await.unwrap();
         assert_eq!(
-            tron.check(&mut dev, &b, &mut ctx(&mut w)).await.unwrap(),
+            tron.check(&mut dev, &b, &listed, &mut ctx(&mut w))
+                .await
+                .unwrap(),
             vec![Finding::Stop {
                 code: "tron.device_changed".into(),
                 details: "rootfs".into()
@@ -569,7 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_work_image_with_the_keys_is_gone_after_the_write() {
-        let mut w = World::new();
+        let mut w = world();
         let (path, section) = flash(w.dir.path());
         w.tables = Tables { raw: section };
         w.base = base(w.dir.path());
@@ -583,7 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_table_or_a_large_meta_is_not_read() {
-        let mut w = World::new();
+        let mut w = world();
         let (path, section) = flash(w.dir.path());
         let other = String::from_utf8(section)
             .unwrap()
@@ -609,7 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_tron_without_serial_is_not_opened() {
-        let w = World::new();
+        let w = world();
         let (path, _) = flash(w.dir.path());
         let mut disk = std::fs::read(&path).unwrap();
         let (_, a, b) =

@@ -171,6 +171,29 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "An optional part of the vendor system cannot be read reliably; setup goes on without it.",
     ),
     (
+        "tron.firmware_old",
+        "Diese Tron hat einen älteren Softwarestand des Herstellers, mit dem MowBite OS nicht fahren würde. Zuerst in \
+         der Airseekers-App das neueste Update einspielen, die Tron danach 10 Minuten eingeschaltet lassen (sie \
+         aktualisiert dabei ihre Platinen) und den Installer erneut starten. Auf die Tron wurde nichts geschrieben.",
+        "This Tron has an older vendor software version MowBite OS would not drive with. First install the latest \
+         update in the Airseekers app, leave the Tron switched on for 10 minutes afterwards (it updates its boards \
+         meanwhile) and start the installer again. Nothing was written to the Tron.",
+    ),
+    (
+        "tron.firmware_new",
+        "Diese Tron hat neuere Platinen-Firmware, als MowBite OS bisher kennt. Fahren und Messer bleiben gesperrt, \
+         bis die Sicherheitsmessung in der App bestanden ist; sie dauert etwa 15 Minuten.",
+        "This Tron has newer board firmware than MowBite OS knows so far. Driving and the blade stay locked until \
+         the safety measurement in the app has passed; it takes about 15 minutes.",
+    ),
+    (
+        "tron.firmware_unknown",
+        "Der Installer kann nicht erkennen, welche Platinen-Firmware diese Tron bekommt. Ist sie nicht freigegeben, \
+         bleiben Fahren und Messer gesperrt, bis die Sicherheitsmessung in der App bestanden ist.",
+        "The installer cannot tell which board firmware this Tron gets. If it is not cleared, driving and the blade \
+         stay locked until the safety measurement in the app has passed.",
+    ),
+    (
         "tron.vendor_unknown",
         "Diesen Softwarestand des Herstellers kennt der Installer nicht. Er kann trotzdem weitermachen.",
         "The installer does not know this vendor software version. It can go on anyway.",

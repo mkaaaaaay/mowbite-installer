@@ -256,10 +256,12 @@ pub trait Mower {
     async fn open(&self, found: &Found, ctx: &mut Ctx<'_>) -> Result<(Self::Device, Identity)>;
     /// Everything once, system and boot areas twice and compared; resumes after an abort, never replaces a backup.
     async fn backup(&self, dev: &mut Self::Device, ctx: &mut Ctx<'_>) -> Result<Backup>;
+    /// `inputs`: the bundles of the release, for what the new system will expect of the device.
     async fn check(
         &self,
         dev: &mut Self::Device,
         backup: &Backup,
+        inputs: &Inputs,
         ctx: &mut Ctx<'_>,
     ) -> Result<Vec<Finding>>;
     async fn prepare(

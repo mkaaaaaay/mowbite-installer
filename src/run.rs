@@ -264,7 +264,7 @@ impl<'m, M: Mower> Driver<'m, M> {
             Step::Check => {
                 let dev = self.dev.as_mut().expect("opened at Connect");
                 let backup = self.run.backup.as_ref().expect("made at Backup");
-                let findings = self.mower.check(dev, backup, ctx).await?;
+                let findings = self.mower.check(dev, backup, inputs, ctx).await?;
                 let stop = findings.iter().any(|f| matches!(f, Finding::Stop { .. }));
                 self.run.findings = findings;
                 if stop {

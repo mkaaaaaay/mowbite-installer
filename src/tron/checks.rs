@@ -6,7 +6,7 @@ use super::gpt::{self, Entry};
 use super::identity;
 use super::rootfs::{self, Kind};
 use crate::mower::{Finding, Part};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ext4_view::Ext4;
 
 /// What the signed tables say about known devices.
@@ -62,6 +62,69 @@ impl Checked {
         self.findings
             .iter()
             .any(|f| matches!(f, Finding::Stop { .. }))
+    }
+}
+
+/// Board firmware MowBite OS drives with, per mcu_bin folder of the vendor stack ("chassis", "cutter").
+pub struct Firmware {
+    pub boards: Vec<(String, Vec<String>)>,
+}
+
+/// The lists `<board>_firmware: ["0.6.34", …]` (one line each) of the Tron platform file.
+pub fn firmware_lists(yaml: &str) -> Result<Firmware> {
+    let mut boards = Vec::new();
+    for board in BOARDS {
+        let key = format!("{board}_firmware:");
+        let lines: Vec<&str> = yaml
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix(key.as_str()))
+            .collect();
+        let [list] = lines[..] else {
+            anyhow::bail!("{key} {} times in the platform file", lines.len());
+        };
+        let list: Vec<String> =
+            serde_json::from_str(list.trim()).with_context(|| format!("{key} is no list"))?;
+        anyhow::ensure!(
+            !list.is_empty() && list.iter().all(|v| identity::firmware_number(v).is_some()),
+            "{key} {list:?}"
+        );
+        boards.push((board.to_string(), list));
+    }
+    Ok(Firmware { boards })
+}
+
+/// mcu_bin folders of the vendor stack and key prefixes in the platform file: motor board and blade board.
+const BOARDS: [&str; 2] = ["chassis", "cutter"];
+
+/// The vendor stack flashes its own board firmware while it runs. Older than every listed one: the owner updates
+/// the vendor system first, else MowBite OS would not drive. Newer and not listed: driving stays locked until the
+/// owner measures it in the app, so the owner says yes first.
+pub fn check_firmware(c: &mut Checked, oem: Result<Ext4>, version: Option<&str>, fw: &Firmware) {
+    let Some(version) = version else {
+        return c.warn("tron.firmware_unknown", "no vendor version");
+    };
+    let oem = match oem {
+        Ok(fs) => fs,
+        Err(e) => return c.warn("tron.firmware_unknown", format!("{e:#}")),
+    };
+    for (board, listed) in &fw.boards {
+        let Some(target) = identity::board_target(&oem, version, board) else {
+            c.warn(
+                "tron.firmware_unknown",
+                format!("{board}: no mcu_bin/{board}/latest.bin"),
+            );
+            continue;
+        };
+        if listed.contains(&target) {
+            continue;
+        }
+        let t = identity::firmware_number(&target);
+        let what = format!("{board} {target}, measured: {}", listed.join(", "));
+        if listed.iter().all(|l| identity::firmware_number(l) > t) {
+            c.stop("tron.firmware_old", what);
+        } else {
+            c.warn("tron.firmware_new", what);
+        }
     }
 }
 
@@ -250,6 +313,53 @@ mod tests {
             optional: vec!["/usr/lib/kernel/driver".into()],
             vendor_versions: vec!["v1.1.1".into()],
         }
+    }
+
+    #[test]
+    fn firmware_lists_from_the_platform_file() {
+        let fw = firmware_lists(
+            "tron:\n  ros__parameters:\n    # chassis_firmware: old\n    cutter_firmware: [\"0.6.36\"]\n    \
+             chassis_firmware: [\"0.6.34\", \"0.6.35\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fw.boards,
+            [
+                (
+                    "chassis".to_string(),
+                    vec!["0.6.34".to_string(), "0.6.35".to_string()]
+                ),
+                ("cutter".to_string(), vec!["0.6.36".to_string()]),
+            ]
+        );
+        for bad in [
+            "cutter_firmware: [\"0.6.36\"]\n",
+            "cutter_firmware: [\"0.6.36\"]\nchassis_firmware: []\n",
+            "cutter_firmware: [\"0.6.36\"]\nchassis_firmware: [\"x\"]\n",
+            "cutter_firmware: 0.6.36\nchassis_firmware: [\"0.6.34\"]\n",
+            "cutter_firmware: [\"0.6.36\"]\ncutter_firmware: [\"0.6.36\"]\nchassis_firmware: [\"0.6.34\"]\n",
+        ] {
+            assert!(firmware_lists(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn firmware_unknown_without_version_or_target() {
+        let fw = Firmware {
+            boards: vec![("chassis".into(), vec!["0.6.34".into()])],
+        };
+        let mut c = Checked::default();
+        check_firmware(&mut c, Err(anyhow::anyhow!("x")), Some("v1"), &fw);
+        check_firmware(&mut c, Err(anyhow::anyhow!("x")), None, &fw);
+        assert_eq!(codes(&c), ["warn tron.firmware_unknown"; 2]);
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        let img = dir.path().join("oem.img");
+        ext4_from(&tree, &img);
+        let mut c = Checked::default();
+        check_firmware(&mut c, rootfs::open(&img, 0), Some("v1"), &fw);
+        assert_eq!(codes(&c), ["warn tron.firmware_unknown"]);
     }
 
     fn codes(c: &Checked) -> Vec<String> {
