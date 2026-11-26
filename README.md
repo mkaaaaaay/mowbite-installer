@@ -8,9 +8,9 @@ mower's flash, and that backup is what the way back uses.
 
 The MowBite Installer is a community project and not affiliated with Airseekers.
 
-**Not ready for use yet.** The installer runs against a file copy of a Tron's flash, but not on a mower yet: opening a
-real Tron over USB stops on purpose until its USB modes are measured, and there are no release files to install
-yet. Follow the progress on the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
+**Test version.** The installer runs on a real Tron now, and we are testing it on our own. Use it only if you are
+fine with a test: keep the backup it makes, the way back to the vendor system uses it. Follow the progress on the
+[MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 
 - [What it does](#what-it-does)
 - [What you need](#what-you-need)
@@ -25,8 +25,10 @@ yet. Follow the progress on the [MowBite Discord](https://discord.gg/VpPFRx9Ce4)
 2. **Finds the Tron** in its USB mode. On Windows it sets up the WinUSB driver once, if the Tron has none yet.
 3. **Backs it up**: the whole flash once, the system and every boot area a second time, compared by sha256. A backup
    that was started is resumed, never replaced.
-4. **Checks the mower** before anything is written: partition table, vendor version, kernel and the parts MowBite OS
-   needs from the vendor system. An unknown vendor version gets a clear warning first.
+4. **Checks the mower** before anything is written: partition table, vendor version, kernel, the parts MowBite OS
+   needs from the vendor system and the firmware the vendor system puts on the boards. An unknown vendor version or
+   board firmware gets a clear warning first; firmware older than MowBite OS knows stops the run, update the vendor
+   system in the Airseekers app first.
 5. **Writes MowBite OS** into the system partition only, reads it back and restarts the mower when both match. The
    boot area is never written.
 6. **First start**: the mower joins your Wi-Fi and installs the OS, the planner and the app from what the installer
