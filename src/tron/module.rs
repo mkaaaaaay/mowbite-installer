@@ -281,10 +281,11 @@ impl<P: Port> Mower for Tron<P> {
         let known = tables::parse(&ctx.tables.raw)?;
         let start = saved(ctx.store, "flash-start")?;
         let boot = saved(ctx.store, "boot")?;
-        let mut c = checks::check(&start, &boot, vendor_rootfs(ctx, b), &known);
-        let version = vendor_rootfs(ctx, b)
-            .ok()
-            .and_then(|fs| identity::vendor_version(&fs));
+        // Opening a saved area hashes its whole file first: each one once.
+        ctx.progress.step("tron.check_system");
+        let vendor = vendor_rootfs(ctx, b);
+        let version = vendor.as_ref().ok().and_then(identity::vendor_version);
+        let mut c = checks::check(&start, &boot, vendor, &known);
         checks::check_firmware(
             &mut c,
             saved_fs(ctx, OEM),

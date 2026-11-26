@@ -206,6 +206,11 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "The installer does not know this vendor software version. It can go on anyway.",
     ),
     (
+        "tron.check_system",
+        "Der Installer prüft das gesicherte System der Tron. Das dauert ein paar Minuten, ohne Anzeige.",
+        "The installer checks the saved system of the Tron. This takes a few minutes, without a display.",
+    ),
+    (
         "tron.check_backup",
         "Die Sicherung wird geprüft, bevor sie zurückgeschrieben wird.",
         "Checking the backup before writing it back.",
