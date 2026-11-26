@@ -675,6 +675,14 @@ mod tests {
                 })
                 .collect();
             assert_eq!(codes, [code], "{chassis}");
+            assert_eq!(
+                f.contains(&Finding::Info {
+                    code: "tron.report".into(),
+                    details: "vendor v1.1.1, chassis 0.6.34, cutter 0.6.36".into()
+                }),
+                code.starts_with("warn"),
+                "{f:?}"
+            );
         }
         drop(dev);
         // The Tron started its system in between.

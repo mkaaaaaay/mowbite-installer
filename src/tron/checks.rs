@@ -100,33 +100,49 @@ const BOARDS: [&str; 2] = ["chassis", "cutter"];
 /// the vendor system first, else MowBite OS would not drive. Newer and not listed: driving stays locked until the
 /// owner measures it in the app, so the owner says yes first.
 pub fn check_firmware(c: &mut Checked, oem: Result<Ext4>, version: Option<&str>, fw: &Firmware) {
-    let Some(version) = version else {
-        return c.warn("tron.firmware_unknown", "no vendor version");
-    };
-    let oem = match oem {
-        Ok(fs) => fs,
-        Err(e) => return c.warn("tron.firmware_unknown", format!("{e:#}")),
-    };
-    for (board, listed) in &fw.boards {
-        let Some(target) = identity::board_target(&oem, version, board) else {
-            c.warn(
-                "tron.firmware_unknown",
-                format!("{board}: no mcu_bin/{board}/latest.bin"),
-            );
-            continue;
-        };
-        if listed.contains(&target) {
-            continue;
-        }
-        let t = identity::firmware_number(&target);
-        let what = format!("{board} {target}, measured: {}", listed.join(", "));
-        if listed.iter().all(|l| identity::firmware_number(l) > t) {
-            c.stop("tron.firmware_old", what);
-        } else {
-            c.warn("tron.firmware_new", what);
+    let mut seen = vec![format!("vendor {}", version.unwrap_or("?"))];
+    match (version, oem) {
+        (None, _) => c.warn("tron.firmware_unknown", "no vendor version"),
+        (_, Err(e)) => c.warn("tron.firmware_unknown", format!("{e:#}")),
+        (Some(version), Ok(oem)) => {
+            for (board, listed) in &fw.boards {
+                let Some(target) = identity::board_target(&oem, version, board) else {
+                    seen.push(format!("{board} ?"));
+                    c.warn(
+                        "tron.firmware_unknown",
+                        format!("{board}: no mcu_bin/{board}/latest.bin"),
+                    );
+                    continue;
+                };
+                seen.push(format!("{board} {target}"));
+                if listed.contains(&target) {
+                    continue;
+                }
+                let t = identity::firmware_number(&target);
+                let what = format!("{board} {target}, measured: {}", listed.join(", "));
+                if listed.iter().all(|l| identity::firmware_number(l) > t) {
+                    c.stop("tron.firmware_old", what);
+                } else {
+                    c.warn("tron.firmware_new", what);
+                }
+            }
         }
     }
+    // A stand nobody reported yet: the owner is asked to send it, nothing is sent from here.
+    if c.findings
+        .iter()
+        .any(|f| matches!(f, Finding::Warn { code, .. } if REPORTED.contains(&code.as_str())))
+    {
+        c.info("tron.report", seen.join(", "));
+    }
 }
+
+/// Warnings that mean the tables or the firmware lists lack this Tron's stand.
+const REPORTED: [&str; 3] = [
+    "tron.vendor_unknown",
+    "tron.firmware_new",
+    "tron.firmware_unknown",
+];
 
 /// `start`: the first sectors of the flash (at least gpt::PRIMARY_SECTORS), `boot`: the whole boot partition,
 /// `rootfs`: the saved rootfs partition.
@@ -351,7 +367,19 @@ mod tests {
         let mut c = Checked::default();
         check_firmware(&mut c, Err(anyhow::anyhow!("x")), Some("v1"), &fw);
         check_firmware(&mut c, Err(anyhow::anyhow!("x")), None, &fw);
-        assert_eq!(codes(&c), ["warn tron.firmware_unknown"; 2]);
+        assert_eq!(
+            codes(&c),
+            [
+                "warn tron.firmware_unknown",
+                "info tron.report",
+                "warn tron.firmware_unknown",
+                "info tron.report"
+            ]
+        );
+        assert!(c.findings.contains(&Finding::Info {
+            code: "tron.report".into(),
+            details: "vendor ?".into()
+        }));
         let dir = tempfile::tempdir().unwrap();
         let tree = dir.path().join("tree");
         std::fs::create_dir(&tree).unwrap();
@@ -359,7 +387,14 @@ mod tests {
         ext4_from(&tree, &img);
         let mut c = Checked::default();
         check_firmware(&mut c, rootfs::open(&img, 0), Some("v1"), &fw);
-        assert_eq!(codes(&c), ["warn tron.firmware_unknown"]);
+        assert_eq!(
+            codes(&c),
+            ["warn tron.firmware_unknown", "info tron.report"]
+        );
+        assert!(c.findings.contains(&Finding::Info {
+            code: "tron.report".into(),
+            details: "vendor v1, chassis ?".into()
+        }));
     }
 
     fn codes(c: &Checked) -> Vec<String> {

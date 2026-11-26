@@ -194,6 +194,13 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
          stay locked until the safety measurement in the app has passed.",
     ),
     (
+        "tron.report",
+        "Diesen Stand hat uns noch niemand gemeldet. Schick uns bitte die Angaben in der Klammer, dann nehmen wir \
+         ihn auf: https://github.com/mkaaaaaay/mowbite-installer/issues",
+        "Nobody has reported this stand to us yet. Please send us what is in the brackets, then we add it: \
+         https://github.com/mkaaaaaay/mowbite-installer/issues",
+    ),
+    (
         "tron.vendor_unknown",
         "Diesen Softwarestand des Herstellers kennt der Installer nicht. Er kann trotzdem weitermachen.",
         "The installer does not know this vendor software version. It can go on anyway.",
