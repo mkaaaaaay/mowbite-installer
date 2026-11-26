@@ -12,10 +12,16 @@ The MowBite Installer is a community project and not affiliated with Airseekers.
 fine with a test: keep the backup it makes, the way back to the vendor system uses it. Follow the progress on the
 [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 
+![The MowBite app: dashboard, map, recording and schedule](https://raw.githubusercontent.com/mkaaaaaay/mowbite/main/docs/screens.webp)
+
+After the installation the mower runs the [MowBite app](https://github.com/mkaaaaaay/mowbite): open it in the
+browser on a phone or computer, or use the Android app.
+
 - [What it does](#what-it-does)
 - [What you need](#what-you-need)
 - [Use it](#use-it)
 - [Safety and your data](#safety-and-your-data)
+- [The MowBite project](#the-mowbite-project)
 - [Build](#build)
 - [License](#license)
 
@@ -89,6 +95,21 @@ next to `mowbite-installer.exe`.
 - Nothing of the vendor is downloaded or shared: the parts the new system needs come from your own backup.
 - The MQTT broker on the mower has no login. Keep the mower in a network you trust and never open its ports to the
   internet.
+
+## The MowBite project
+
+- [MowBite](https://github.com/mkaaaaaay/mowbite): the app on the mower, with live dashboard, map editor, recording
+  areas by driving, schedule and history. Also on
+  [Google Play](https://play.google.com/store/apps/details?id=io.github.mkaaaaaay.mowbite).
+- [MowBite Planner](https://github.com/mkaaaaaay/mowbite-planner): the mowing planner, it keeps the whole mower
+  away from edges and obstacles, not just its middle.
+- [MowBite for Home Assistant](https://github.com/mkaaaaaay/mowbite-ha): Home Assistant integration for OpenMower
+  mowers, with the MowBite card and map.
+- [MowBite Updater](https://github.com/mkaaaaaay/mowbite-updater): keeps OpenMower, MowBite and the planner up to
+  date on OpenMower mowers.
+- [mowbite-releases](https://github.com/mkaaaaaay/mowbite-releases): the signed release files of MowBite OS this
+  installer puts on the mower.
+- [MowBite Discord](https://discord.gg/VpPFRx9Ce4): questions, test reports and news.
 
 ## Build
 
