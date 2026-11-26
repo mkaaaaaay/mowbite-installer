@@ -17,6 +17,8 @@ impl Awake {
                 "--what=sleep:idle",
                 "--who=mowbite-installer",
                 "--mode=block",
+                // A refusal is fine: the frame tells the owner to keep the PC awake instead of a password prompt.
+                "--no-ask-password",
             ])
             .arg(format!("--why={why}"))
             // Ends with this process, also when it is killed.
