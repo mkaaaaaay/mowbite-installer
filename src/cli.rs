@@ -406,6 +406,7 @@ fn for_install(
 struct Asked<'a, M: Mower> {
     mower: &'a M,
     store: PathBuf,
+    work: &'a Path,
     base: &'a BaseImage,
     owner: &'a dyn Owner,
     first: &'a Confirm,
@@ -418,6 +419,9 @@ impl<M: Mower> Typed for Asked<'_, M> {
     }
 
     fn for_install(&mut self, inputs: &mut Inputs) -> Result<()> {
+        // The backup is there; the check before asked for no room for the work files.
+        let work_bytes = self.mower.space_needed().work_bytes;
+        crate::space::check(&self.store, 0, self.work, work_bytes)?;
         for_install(&self.store, self.owner, self.wifi, inputs)?;
         self.mower.check_inputs(self.base, inputs)?;
         self.first.aim(
@@ -448,6 +452,7 @@ pub async fn go<M: Mower>(
     let mut typed = Asked {
         mower,
         store: prepared.store.root().to_path_buf(),
+        work: &prepared.work.path,
         base: &prepared.base,
         owner,
         first: &first,
