@@ -91,6 +91,8 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 
 ![Connect, back up, check, write, first start](docs/install.svg)
 
+![The installer page: choose a goal, backup, the question before writing, done](docs/page.webp)
+
 1. **Download** the installer for your PC from the
    [releases](https://github.com/mkaaaaaay/mowbite-installer/releases) of this repo.
    On Windows keep `mowbite-usb-driver.exe` and `libwdi.dll` next to `mowbite-installer.exe`.
@@ -109,8 +111,6 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
    stops, start it again with the same folder.
 6. **Open the app** with the button at the end. Map, RTK and the safety measurement follow in the setup of the
    MowBite app. Until then the mower only takes remote control and the blade stays locked.
-
-![The installer page: choose a goal, backup, the question before writing, done](docs/page.webp)
 
 <details>
 <summary><b>In a terminal instead</b></summary>
