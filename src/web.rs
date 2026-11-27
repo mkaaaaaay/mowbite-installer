@@ -150,6 +150,9 @@ pub struct View {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub before: BTreeMap<&'static str, Text>,
     pub store: String,
+    /// What the mower needs, for the free space the page shows at the backup folder.
+    #[serde(skip)]
+    pub space: crate::mower::Space,
     /// The folder dialog of the system is open.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub picking: bool,
@@ -509,6 +512,25 @@ fn answer(request: &Request, port: u16, key: &str, shared: &Shared) -> Reply {
                         return Reply::status("409 Conflict");
                     }
                 }
+                "space" => {
+                    let Some(goal) = goal_of(body["goal"].as_str().unwrap_or_default()) else {
+                        return Reply::status("400 Bad Request");
+                    };
+                    let store = PathBuf::from(body["path"].as_str().unwrap_or_default().trim());
+                    let need = crate::cli::needs(goal, shared.view.lock().unwrap().space);
+                    let work = store.join("work");
+                    let room =
+                        crate::space::rooms(&store, need.backup_bytes, &work, need.work_bytes);
+                    return match room.as_deref() {
+                        Ok([room]) if store.is_absolute() => Reply::json(
+                            serde_json::to_vec(
+                                &serde_json::json!({ "free": room.free, "need": room.need }),
+                            )
+                            .unwrap(),
+                        ),
+                        _ => Reply::status("404 Not Found"),
+                    };
+                }
                 "setup_key" => {
                     let key = shared.inbox.lock().unwrap().setup_key.clone();
                     return match key {
@@ -579,6 +601,12 @@ fn step_id(step: Step) -> &'static str {
         Step::Done => "done",
         Step::Stopped => "stopped",
     }
+}
+
+pub fn goal_of(id: &str) -> Option<Goal> {
+    [Goal::Install, Goal::Check, Goal::Back]
+        .into_iter()
+        .find(|g| goal_id(*g) == id)
 }
 
 pub fn goal_id(goal: Goal) -> &'static str {
@@ -1025,6 +1053,39 @@ mod tests {
         shared.update(|v| v.view = "start");
         assert_eq!(status(&other, &shared), "403 Forbidden");
         assert!(picks.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_free_space_at_a_folder_for_a_goal() {
+        let shared = Shared::default();
+        let space = crate::mower::Space {
+            backup_bytes: 30,
+            work_bytes: 12,
+        };
+        shared.update(|v| v.space = space);
+        let dir = tempfile::tempdir().unwrap();
+        let ask = |goal: &str, path: &std::path::Path| {
+            let body = serde_json::json!({ "goal": goal, "path": path }).to_string();
+            answer(
+                &request("POST", &format!("/{KEY}/space"), HOST, Some(PAGE), &body),
+                4000,
+                KEY,
+                &shared,
+            )
+        };
+        let folder = dir.path().join("new");
+        for (goal, need) in [("install", 42), ("check", 30), ("back", 0)] {
+            let reply = ask(goal, &folder);
+            assert_eq!(reply.status, "200 OK");
+            let room: Value = serde_json::from_slice(&reply.body).unwrap();
+            assert_eq!(room["need"], need, "{goal}");
+            assert!(room["free"].as_u64().unwrap() > 0);
+        }
+        assert_eq!(ask("other", &folder).status, "400 Bad Request");
+        assert_eq!(
+            ask("install", std::path::Path::new("relative")).status,
+            "404 Not Found"
+        );
     }
 
     #[test]

@@ -8,10 +8,10 @@ use mowbite_installer::run::Goal;
 use mowbite_installer::secret::Secret;
 use mowbite_installer::sign::Signers;
 use mowbite_installer::text::{Bar, Owner, german, text_of, word};
-use mowbite_installer::tron::module::{Tron, before};
+use mowbite_installer::tron::module::{SPACE, Tron, before};
 use mowbite_installer::tron::port::UsbPort;
 use mowbite_installer::tron::{tables, texts::TEXTS};
-use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared, goal_id};
+use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared, goal_id, goal_of};
 use mowbite_installer::{fetch, release};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -57,6 +57,7 @@ async fn text_mode(list: &[String]) -> Result<bool> {
         "{}",
         word("frame.store_foreign")
     );
+    cli::check_space(&args, SPACE)?;
     let signers = Signers::builtin();
     let (tron, tables) = tron(&args, &signers, &Bar::new(TEXTS))?;
     cli::run(&tron, &args, &signers, &tables).await
@@ -88,12 +89,7 @@ type Wifi = (String, Secret<String>);
 
 /// What the page sent to start: the goal and the backup folder, for install the Wi-Fi.
 fn start_args(params: &Value) -> Result<(Args, Option<Wifi>), &'static str> {
-    let goal = match params["goal"].as_str() {
-        Some("install") => Goal::Install,
-        Some("check") => Goal::Check,
-        Some("back") => Goal::Back,
-        _ => return Err("frame.store_missing"),
-    };
+    let goal = goal_of(params["goal"].as_str().unwrap_or_default()).ok_or("frame.store_missing")?;
     let store = PathBuf::from(params["store"].as_str().unwrap_or_default().trim());
     if store.as_os_str().is_empty() {
         return Err("frame.store_missing");
@@ -135,6 +131,7 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
         keep: false,
     };
     let (args, wifi) = start_args(params).map_err(|code| refused(word(code).to_owned()))?;
+    cli::check_space(&args, SPACE).map_err(|error| refused(format!("{error:#}")))?;
     let signers = Signers::builtin();
     let owner = PageOwner::new(shared.clone(), args.goal, TEXTS);
     let ended = |error: anyhow::Error| {
@@ -176,6 +173,7 @@ async fn page_mode() -> Result<bool> {
                 .insert(goal_id(goal), text_of(TEXTS, before(goal)).to_owned());
         }
         v.store = default_store().display().to_string();
+        v.space = SPACE;
     });
     let url = server.url();
     println!("{}", word("frame.page").replace("{url}", &url));

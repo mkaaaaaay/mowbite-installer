@@ -232,6 +232,7 @@ impl Inputs {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Space {
     pub backup_bytes: u64,
     pub work_bytes: u64,

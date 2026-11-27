@@ -169,6 +169,11 @@ header h1 {
   font-size: var(--text-s);
 }
 
+.secondary[data-tone="bad"] {
+  color: var(--soft-bad);
+  font-weight: 600;
+}
+
 p {
   margin: 0;
 }

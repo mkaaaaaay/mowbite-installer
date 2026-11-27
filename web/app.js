@@ -23,6 +23,7 @@ const T = {
   store_pick: ["Auswählen…", "Choose…"],
   store_picking: ["Das Auswahlfenster ist offen, vielleicht hinter dem Browser.",
     "The window to choose is open, maybe behind the browser."],
+  store_space: ["Frei: {free} GB, nötig: etwa {need} GB", "Free: {free} GB, needed: about {need} GB"],
   store_hint: ["Hier liegen die Sicherung mit den Schlüsseln und dem WLAN der Tron: nicht weitergeben.",
     "The backup with the keys and Wi-Fi of the Tron goes here: keep it to yourself."],
   wifi_name: ["WLAN-Name", "Wi-Fi name"],
@@ -86,6 +87,10 @@ let state = null;
 let goal = null;
 let logFrom = 0;
 let pickedSeen = 0;
+// Free space at the backup folder for the chosen goal, asked again when either changes.
+let space = null;
+let spaceFor = "";
+let spaceTimer = null;
 let sending = false;
 
 function el(tag, attrs, children) {
@@ -130,6 +135,13 @@ function renderStart(s) {
     pickedSeen = s.picked.n;
     $("store").value = s.picked.path;
   }
+  askSpace();
+  const showSpace = space && goal !== "back";
+  $("store_space").hidden = !showSpace;
+  if (showSpace) {
+    $("store_space").textContent = t("store_space", { free: Math.floor(space.free / 1e9), need: Math.round(space.need / 1e9) });
+    $("store_space").dataset.tone = space.free < space.need ? "bad" : "";
+  }
   $("store_pick").disabled = !!s.picking || sending;
   $("store_picking").hidden = !s.picking;
   $("store_hint").textContent = t("store_hint");
@@ -139,6 +151,23 @@ function renderStart(s) {
   $("go").textContent = goal ? t("go_" + goal) : t("go_choose");
   $("go").className = goal ? "button primary" : "button";
   $("go").disabled = !goal || sending;
+}
+
+function askSpace() {
+  const key = `${goal}|${$("store").value.trim()}`;
+  if (!goal || goal === "back" || key === spaceFor) return;
+  spaceFor = key;
+  if (PREVIEW) {
+    space = window.previewSpace?.(goal) || null;
+    return;
+  }
+  clearTimeout(spaceTimer);
+  spaceTimer = setTimeout(async () => {
+    const answer = await post("space", { goal, path: $("store").value.trim() }).catch(() => null);
+    if (spaceFor !== key) return;
+    space = answer;
+    render(state, false);
+  }, 400);
 }
 
 function renderRun(s) {
@@ -262,6 +291,8 @@ $("setup_key_show").addEventListener("click", async () => {
   }
   $("setup_key_show").textContent = t($("setup_key_show").dataset.t);
 });
+
+$("store").addEventListener("input", () => render(state, false));
 
 $("store_pick").addEventListener("click", () => send("pick_folder", { from: $("store").value.trim() }));
 

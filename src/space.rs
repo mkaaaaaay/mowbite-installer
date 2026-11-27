@@ -64,31 +64,56 @@ pub fn used_bytes(dir: &Path) -> u64 {
         .sum()
 }
 
-/// Whether the backup and the work folder have room for what is still to come; work inside the backup folder
-/// shares its space.
-pub fn check(store: &Path, backup_bytes: u64, work: &Path, work_bytes: u64) -> Result<()> {
+/// Free and still needed bytes on the file system of a folder.
+#[derive(Debug, PartialEq)]
+pub struct Room<'a> {
+    pub dir: &'a Path,
+    pub free: u64,
+    pub need: u64,
+}
+
+/// The room of the backup and the work folder for what is still to come; work inside the backup folder shares its
+/// space.
+pub fn rooms<'a>(
+    store: &'a Path,
+    backup_bytes: u64,
+    work: &'a Path,
+    work_bytes: u64,
+) -> Result<Vec<Room<'a>>> {
     let backup_left = backup_bytes.saturating_sub(used_bytes(store));
     let work_left = work_bytes.saturating_sub(used_bytes(work));
-    let gib = |b: u64| b.div_ceil(1 << 30);
-    if work.starts_with(store) {
-        let free = free_bytes(store)?;
+    let parts = if work.starts_with(store) {
+        vec![(store, backup_left + work_left)]
+    } else {
+        vec![(store, backup_left), (work, work_left)]
+    };
+    parts
+        .into_iter()
+        .map(|(dir, need)| {
+            Ok(Room {
+                dir,
+                free: free_bytes(dir)?,
+                need,
+            })
+        })
+        .collect()
+}
+
+/// Whole GB as the texts give them: 42.18 GB is "42 GB".
+fn gb(bytes: u64) -> u64 {
+    (bytes + 500_000_000) / 1_000_000_000
+}
+
+/// Whether the backup and the work folder have room for what is still to come.
+pub fn check(store: &Path, backup_bytes: u64, work: &Path, work_bytes: u64) -> Result<()> {
+    for room in rooms(store, backup_bytes, work, work_bytes)? {
         ensure!(
-            free >= backup_left + work_left,
-            "{} has {} GiB free, the backup and the work files need {} GiB",
-            store.display(),
-            gib(free),
-            gib(backup_left + work_left)
-        );
-        return Ok(());
-    }
-    for (dir, need) in [(store, backup_left), (work, work_left)] {
-        let free = free_bytes(dir)?;
-        ensure!(
-            free >= need,
-            "{} has {} GiB free, it needs {} GiB",
-            dir.display(),
-            gib(free),
-            gib(need)
+            room.free >= room.need,
+            "{}",
+            crate::text::word("frame.space_low")
+                .replace("{folder}", &room.dir.display().to_string())
+                .replace("{free}", &(room.free / 1_000_000_000).to_string())
+                .replace("{need}", &gb(room.need).to_string())
         );
     }
     Ok(())
@@ -113,6 +138,21 @@ mod tests {
                 free
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn too_little_room_names_the_folder_and_both_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = free_bytes(dir.path()).unwrap();
+        let store = dir.path().join("b");
+        let error = check(&store, free + 2_000_000_000, &store.join("work"), 0)
+            .unwrap_err()
+            .to_string();
+        let need = gb(free + 2_000_000_000).to_string();
+        assert!(
+            error.contains(&store.display().to_string()) && error.contains(&need),
+            "{error}"
         );
     }
 

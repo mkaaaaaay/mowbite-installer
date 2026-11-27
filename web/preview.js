@@ -73,6 +73,9 @@ function show(name) {
   for (const b of document.querySelectorAll("#preview button")) b.setAttribute("aria-pressed", b.textContent === name);
 }
 
+// The PC of the start page: 13.9 GB free.
+window.previewSpace = (goal) => ({ free: 13.9e9, need: goal === "install" ? 42.18e9 : 25e9 });
+
 window.previewAnswer = (what, params) => {
   if (what === "pick_folder") {
     const n = (STATES[current].picked?.n || 0) + 1;

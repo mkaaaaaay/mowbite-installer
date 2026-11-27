@@ -149,6 +149,11 @@ fn firmware(inputs: &Inputs) -> Result<checks::Firmware> {
     anyhow::bail!("{}: no {PLATFORM_YAML}", os.display())
 }
 
+pub const SPACE: Space = Space {
+    backup_bytes: BACKUP_BYTES,
+    work_bytes: WORK_BYTES,
+};
+
 /// Code of the text the owner reads before a goal.
 pub fn before(goal: Goal) -> &'static str {
     match goal {
@@ -185,10 +190,7 @@ impl<P: Port> Mower for Tron<P> {
     }
 
     fn space_needed(&self) -> Space {
-        Space {
-            backup_bytes: BACKUP_BYTES,
-            work_bytes: WORK_BYTES,
-        }
+        SPACE
     }
 
     fn check_wifi(&self, name: &str, key: &str) -> Result<()> {

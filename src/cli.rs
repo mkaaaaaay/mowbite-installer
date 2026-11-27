@@ -2,7 +2,7 @@
 //! files, which the installer downloads into the backup folder when none is given. Loads the release files against
 //! the built-in keys and asks the owner for the Wi-Fi.
 
-use crate::mower::{BaseImage, Bundle, Inputs, Mower, Progress, Tables, WorkDir};
+use crate::mower::{BaseImage, Bundle, Inputs, Mower, Progress, Space, Tables, WorkDir};
 use crate::net::Confirm;
 use crate::release;
 use crate::run::Goal;
@@ -103,6 +103,27 @@ pub fn store_in(picked: &Path) -> PathBuf {
     } else {
         picked.join(store_name())
     }
+}
+
+/// What a goal needs for the backup and the work files; the way back only reads the backup.
+pub fn needs(goal: Goal, space: Space) -> Space {
+    match goal {
+        Goal::Install => space,
+        Goal::Check => Space {
+            work_bytes: 0,
+            ..space
+        },
+        Goal::Back => Space::default(),
+    }
+}
+
+/// Room for the goal, checked before the download and again before the mower is read.
+pub fn check_space(args: &Args, space: Space) -> Result<()> {
+    if args.goal == Goal::Back {
+        return Ok(());
+    }
+    let need = needs(args.goal, space);
+    crate::space::check(&args.store, need.backup_bytes, &args.work, need.work_bytes)
 }
 
 /// name in the release folder; the name may come from a file not yet verified, so only a plain one is taken.
@@ -296,14 +317,7 @@ pub fn prepare<M: Mower>(
 ) -> Result<Prepared> {
     let store = Store::open(&args.store)?;
     crate::store::private_dir(&args.work)?;
-    let space = mower.space_needed();
-    let work_bytes = match args.goal {
-        Goal::Install => space.work_bytes,
-        Goal::Check | Goal::Back => 0,
-    };
-    if args.goal != Goal::Back {
-        crate::space::check(&args.store, space.backup_bytes, &args.work, work_bytes)?;
-    }
+    check_space(args, mower.space_needed())?;
     owner.say(
         &text::word("frame.keep_backup").replace("{folder}", &args.store.display().to_string()),
     );

@@ -481,6 +481,13 @@ const FRAME: &[(&str, &str, &str)] = &[
          folder readable for you only.",
     ),
     (
+        "frame.space_low",
+        "Auf dem Laufwerk von {folder} sind {free} GB frei, gebraucht werden {need} GB. Bitte einen Ordner auf einem \
+         Laufwerk mit mehr Platz wählen, zum Beispiel einer externen Festplatte.",
+        "The drive of {folder} has {free} GB free, {need} GB are needed. Please choose a folder on a drive with more \
+         room, for example an external disk.",
+    ),
+    (
         "frame.pick_store",
         "Sicherungsordner wählen",
         "Choose the backup folder",
