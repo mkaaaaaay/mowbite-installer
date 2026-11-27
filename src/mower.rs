@@ -196,9 +196,7 @@ pub struct Wifi {
 
 /// What the owner typed and what the frame loaded; the module only puts it into the pack.
 pub struct Inputs {
-    pub wifi_name: String,
-    pub wifi_key: Secret<String>,
-    pub wifi_hidden: bool,
+    pub wifi: Wifi,
     pub device_name: String,
     pub setup_wifi_key: Secret<String>,
     /// 32 hex digits from the sheet: the mower proves its answers on the network with it.
@@ -211,9 +209,11 @@ impl Inputs {
     /// Nothing typed and nothing loaded: for back, and for check beside its bundles.
     pub fn none() -> Self {
         Inputs {
-            wifi_name: String::new(),
-            wifi_key: Secret::new(String::new()),
-            wifi_hidden: false,
+            wifi: Wifi {
+                name: String::new(),
+                key: Secret::new(String::new()),
+                hidden: false,
+            },
             device_name: String::new(),
             setup_wifi_key: Secret::new(String::new()),
             install_id: Secret::new(String::new()),

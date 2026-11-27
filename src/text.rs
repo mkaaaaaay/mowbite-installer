@@ -21,8 +21,6 @@ const NETWORK_WAIT: Duration = Duration::from_secs(20 * 60);
 /// A mower in its Wi-Fi answers within a minute of its restart (measured on a Tron). After this the owner hears what
 /// to check, and of the setup Wi-Fi the mower opens 3 min after a start without its Wi-Fi.
 const NOT_FOUND_HINT: Duration = Duration::from_secs(2 * 60);
-/// The page of the mower on its setup Wi-Fi.
-const SETUP_URL: &str = "http://10.42.0.1/";
 
 /// A yes-or-no question before something is written: the findings, the question and what each answer does.
 pub struct Ask {
@@ -127,7 +125,7 @@ pub fn not_found_lines(help: &NotFound) -> Vec<String> {
             .replace("{wifi}", help.wifi)
             .replace("{name}", help.name)
             .replace("{sheet}", &help.sheet.display().to_string())
-            .replace("{setup}", SETUP_URL)
+            .replace("{setup}", &setup_url())
     };
     [
         "frame.not_found",
@@ -900,16 +898,7 @@ pub async fn run<M: Mower, F: FirstStart>(
     // Where the mower answered its first start.
     let mut found: Option<IpAddr> = None;
     let leave = |driver: &mut Driver<'_, M>, owner: &dyn Owner| -> Result<bool> {
-        let untouched = driver.leave()?;
-        owner.end(
-            false,
-            word(if untouched {
-                "frame.nothing_written"
-            } else {
-                "frame.incomplete"
-            }),
-            &[],
-        );
+        owner.end(false, stopped(driver.leave()?), &[]);
         Ok(false)
     };
     loop {
@@ -1020,10 +1009,7 @@ pub async fn run<M: Mower, F: FirstStart>(
             Next::WriteOrBack => {
                 let goal = driver.run.goal;
                 let chosen = owner.back(word(back_question(goal)), goal == Goal::Install);
-                if !match chosen {
-                    Some(back) => choose(&mut driver, inputs, back, typed)?,
-                    None => false,
-                } {
+                if !choose(&mut driver, inputs, chosen, typed)? {
                     return leave(&mut driver, owner);
                 }
                 waiting_since = None;
@@ -1083,7 +1069,7 @@ pub async fn run<M: Mower, F: FirstStart>(
                     if lost != hinted && (!lost || waited >= NOT_FOUND_HINT) {
                         let sheet = root.join(crate::cli::SHEET);
                         let help = NotFound {
-                            wifi: &inputs.wifi_name,
+                            wifi: &inputs.wifi.name,
                             name: &inputs.device_name,
                             setup_key: &inputs.setup_wifi_key,
                             sheet: &sheet,
@@ -1115,10 +1101,7 @@ pub async fn run<M: Mower, F: FirstStart>(
                         None => word("frame.back_in_usb").to_owned(),
                     };
                     owner.say(&why);
-                    if !match owner.back(&why, true) {
-                        Some(back) => choose(&mut driver, inputs, back, typed)?,
-                        None => false,
-                    } {
+                    if !choose(&mut driver, inputs, owner.back(&why, true), typed)? {
                         return Ok(false);
                     }
                     waiting_since = None;
@@ -1164,9 +1147,9 @@ pub async fn run<M: Mower, F: FirstStart>(
                 let text = match (goal, found) {
                     (Goal::Back, _) => word("frame.done_back").to_owned(),
                     (_, Some(crate::net::SETUP_ADDR)) => {
-                        owner.app(SETUP_URL);
+                        owner.app(&setup_url());
                         more.extend(later(texts, mower.setup_wifi_later()));
-                        word("frame.done_install_setup").replace("{setup}", SETUP_URL)
+                        word("frame.done_install_setup").replace("{setup}", &setup_url())
                     }
                     (_, Some(addr)) => {
                         log.info("first_start", &format!("confirmed at {addr}"));
@@ -1192,13 +1175,17 @@ pub async fn run<M: Mower, F: FirstStart>(
     }
 }
 
-/// Applies what the owner chose after an unfinished write or a failed start; false when no Wi-Fi came.
+/// Applies what the owner chose after an unfinished write or a failed start; false when nothing was chosen or no
+/// Wi-Fi came.
 fn choose<M: Mower>(
     driver: &mut Driver<'_, M>,
     inputs: &mut Inputs,
-    back: Back,
+    back: Option<Back>,
     typed: &mut dyn Typed,
 ) -> Result<bool> {
+    let Some(back) = back else {
+        return Ok(false);
+    };
     match back {
         Back::Vendor => driver.choose(true)?,
         Back::Again => driver.choose(false)?,
@@ -1206,13 +1193,25 @@ fn choose<M: Mower>(
             let Ok(wifi) = typed.wifi() else {
                 return Ok(false);
             };
-            inputs.wifi_name = wifi.name;
-            inputs.wifi_key = wifi.key;
-            inputs.wifi_hidden = wifi.hidden;
+            inputs.wifi = wifi;
             driver.choose_changed()?;
         }
     }
     Ok(true)
+}
+
+/// The last words of a run that stopped: whether the system on the mower is as it was.
+pub fn stopped(untouched: bool) -> &'static str {
+    word(if untouched {
+        "frame.nothing_written"
+    } else {
+        "frame.incomplete"
+    })
+}
+
+/// The page of the mower on its setup Wi-Fi.
+fn setup_url() -> String {
+    format!("http://{}/", crate::net::SETUP_ADDR)
 }
 
 /// The text of a code of the mower module, when it names one.
@@ -1339,7 +1338,16 @@ mod tests {
         owner: &Script,
         confirms: Vec<Option<String>>,
     ) -> Result<bool> {
-        let first = Confirms::new(confirms);
+        start(w, fake, owner, Goal::Install, &Confirms::new(confirms)).await
+    }
+
+    async fn start(
+        w: &mut World,
+        fake: &Fake,
+        owner: &Script,
+        goal: Goal,
+        first: &Confirms,
+    ) -> Result<bool> {
         run(
             fake,
             &mut w.store,
@@ -1347,8 +1355,8 @@ mod tests {
             &w.tables,
             &w.base,
             &mut w.inputs,
-            Goal::Install,
-            &first,
+            goal,
+            first,
             owner,
             &Bar::new(&[]),
             &w.cancel,
@@ -1383,22 +1391,9 @@ mod tests {
         }];
         let owner = Script::default();
         let first = Confirms::new(vec![]);
-        let checked = run(
-            &fake,
-            &mut w.store,
-            &w.work,
-            &w.tables,
-            &w.base,
-            &mut w.inputs,
-            Goal::Check,
-            &first,
-            &owner,
-            &Bar::new(&[]),
-            &w.cancel,
-            &mut Gast,
-        )
-        .await
-        .unwrap();
+        let checked = start(&mut w, &fake, &owner, Goal::Check, &first)
+            .await
+            .unwrap();
         assert!(checked);
         assert_eq!((fake.ran("backup"), fake.ran("check")), (1, 1));
         assert_eq!((fake.ran("prepare"), fake.ran("write")), (0, 0));
@@ -1422,21 +1417,7 @@ mod tests {
         let fake = Fake::default();
         let owner = Script::agreeing();
         let first = Confirms::new(vec![]);
-        let done = run(
-            &fake,
-            &mut w.store,
-            &w.work,
-            &w.tables,
-            &w.base,
-            &mut w.inputs,
-            Goal::Check,
-            &first,
-            &owner,
-            &Bar::new(&[]),
-            &w.cancel,
-            &mut Gast,
-        )
-        .await;
+        let done = start(&mut w, &fake, &owner, Goal::Check, &first).await;
         assert!(done.unwrap());
         assert_eq!(
             *fake.calls.borrow(),
@@ -1512,9 +1493,9 @@ mod tests {
         owner.backs.borrow_mut().push(Back::OtherWifi);
         let not_yet = vec![Some("not found".to_string()); 5];
         assert!(go(&mut w, &fake, &owner, not_yet).await.unwrap());
-        assert_eq!(w.inputs.wifi_name, "Gast");
-        assert_eq!(w.inputs.wifi_key.expose(), "anderes123");
-        assert!(w.inputs.wifi_hidden);
+        assert_eq!(w.inputs.wifi.name, "Gast");
+        assert_eq!(w.inputs.wifi.key.expose(), "anderes123");
+        assert!(w.inputs.wifi.hidden);
         assert_eq!(
             (fake.ran("prepare"), fake.ran("write"), fake.ran("back")),
             (2, 2, 0)
@@ -1529,21 +1510,7 @@ mod tests {
         let never = if help.is_some() { 1000 } else { 0 };
         let first = Confirms::new(vec![Some("not found".to_string()); never]);
         first.1.set(at);
-        let done = run(
-            &fake,
-            &mut w.store,
-            &w.work,
-            &w.tables,
-            &w.base,
-            &mut w.inputs,
-            Goal::Install,
-            &first,
-            &owner,
-            &Bar::new(&[]),
-            &w.cancel,
-            &mut Gast,
-        )
-        .await;
+        let done = start(&mut w, &fake, &owner, Goal::Install, &first).await;
         assert!(done.unwrap());
         owner
     }
@@ -1561,8 +1528,8 @@ mod tests {
 
         // On its setup Wi-Fi the mower is not on the Wi-Fi of the owner yet.
         let owner = found_at(Some(crate::net::SETUP_ADDR), None).await;
-        assert_eq!(*owner.app.borrow(), SETUP_URL);
-        assert!(owner.ended.borrow()[0].contains(SETUP_URL));
+        assert_eq!(*owner.app.borrow(), setup_url());
+        assert!(owner.ended.borrow()[0].contains(&setup_url()));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1676,21 +1643,7 @@ mod tests {
         // The owner starts "back" now: no question whether to touch an untouched mower, straight to the choice.
         owner.backs.borrow_mut().push(Back::Vendor);
         let first = Confirms::new(vec![]);
-        let back = run(
-            &fake,
-            &mut w.store,
-            &w.work,
-            &w.tables,
-            &w.base,
-            &mut w.inputs,
-            Goal::Back,
-            &first,
-            &owner,
-            &Bar::new(&[]),
-            &w.cancel,
-            &mut Gast,
-        )
-        .await;
+        let back = start(&mut w, &fake, &owner, Goal::Back, &first).await;
         assert!(back.unwrap());
         assert_eq!(fake.ran("back"), 1);
     }
@@ -1724,21 +1677,7 @@ mod tests {
         let owner = Script::default();
         assert!(!go(&mut w, &fake, &owner, vec![]).await.unwrap());
         let first = Confirms::new(vec![]);
-        let back = run(
-            &fake,
-            &mut w.store,
-            &w.work,
-            &w.tables,
-            &w.base,
-            &mut w.inputs,
-            Goal::Back,
-            &first,
-            &owner,
-            &Bar::new(&[]),
-            &w.cancel,
-            &mut Gast,
-        )
-        .await;
+        let back = start(&mut w, &fake, &owner, Goal::Back, &first).await;
         assert!(!back.unwrap());
         assert_eq!(fake.ran("back"), 0);
         // A stop is checked again on the next install (newer tables may know the mower).

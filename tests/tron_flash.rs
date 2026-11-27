@@ -6,7 +6,6 @@
 use mowbite_installer::mower::{
     Bundle, Cancel, Ctx, Finding, Inputs, Log, Mower, Progress, Tables, WorkDir,
 };
-use mowbite_installer::secret::Secret;
 use mowbite_installer::store::Store;
 use mowbite_installer::tron::module::Tron;
 use mowbite_installer::tron::port::{FilePort, Port};
@@ -42,16 +41,11 @@ impl Log for Print {
 /// The release's MowBite OS bundle (TRON_OS_BUNDLE): the checks read its board firmware lists.
 fn os_bundle() -> Inputs {
     Inputs {
-        wifi_name: String::new(),
-        wifi_key: Secret::new(String::new()),
-        wifi_hidden: false,
-        device_name: String::new(),
-        setup_wifi_key: Secret::new(String::new()),
-        install_id: Secret::new(String::new()),
         bundles: vec![Bundle {
             path: env("TRON_OS_BUNDLE"),
             sha256: String::new(),
         }],
+        ..Inputs::none()
     }
 }
 

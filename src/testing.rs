@@ -189,9 +189,11 @@ impl World {
                 pack: vec![],
             },
             inputs: Inputs {
-                wifi_name: "Heim".into(),
-                wifi_key: Secret::new("geheim123".into()),
-                wifi_hidden: false,
+                wifi: Wifi {
+                    name: "Heim".into(),
+                    key: Secret::new("geheim123".into()),
+                    hidden: false,
+                },
                 device_name: "mowbite-ab12".into(),
                 setup_wifi_key: Secret::new("x".into()),
                 install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),

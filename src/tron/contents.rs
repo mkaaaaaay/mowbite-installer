@@ -93,7 +93,7 @@ pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Resul
         "the install id has 32 hex digits"
     );
     a.file(INSTALL_ID, 0o600, (0, 0), format!("{id}\n").as_bytes())?;
-    let tag = &format!("{:x}", Sha256::digest(inputs.wifi_name.as_bytes()))[..8];
+    let tag = &format!("{:x}", Sha256::digest(inputs.wifi.name.as_bytes()))[..8];
     let id = format!("mowbite-wifi-{tag}");
     a.file(
         &format!("{CONNECTIONS}/{id}.nmconnection"),
@@ -101,9 +101,9 @@ pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Resul
         (0, 0),
         home_wifi(
             &id,
-            &inputs.wifi_name,
-            inputs.wifi_key.expose(),
-            inputs.wifi_hidden,
+            &inputs.wifi.name,
+            inputs.wifi.key.expose(),
+            inputs.wifi.hidden,
         )?
         .as_bytes(),
     )?;
@@ -135,9 +135,11 @@ mod tests {
         let bundle = dir.join("os-1.bundle");
         std::fs::write(&bundle, b"signed").unwrap();
         Inputs {
-            wifi_name: "Heim; Netz".into(),
-            wifi_key: Secret::new("ge heim\\123".into()),
-            wifi_hidden: false,
+            wifi: crate::mower::Wifi {
+                name: "Heim; Netz".into(),
+                key: Secret::new("ge heim\\123".into()),
+                hidden: false,
+            },
             device_name: "mowbite-ab12".into(),
             setup_wifi_key: Secret::new("setup-key-1".into()),
             install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),

@@ -255,9 +255,14 @@ function renderQuestion(s) {
   }));
 }
 
+// Built again only when it changed, not on every poll.
+let setupShown = "";
 function renderSetupWifi(s) {
   $("setup_wifi").hidden = !s.setup_wifi;
   if (!s.setup_wifi) return;
+  const shown = JSON.stringify([LANG, s.setup_wifi]);
+  if (shown === setupShown) return;
+  setupShown = shown;
   const [lead, ...lines] = s.setup_wifi.lines || [];
   $("setup_lead").textContent = pick(lead);
   $("setup_lines").replaceChildren(...lines.map((line) => el("li", { text: pick(line) })));

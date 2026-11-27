@@ -6,13 +6,12 @@ use mowbite_installer::cli::{self, Args};
 use mowbite_installer::mower::{Mower, Progress, Tables, Wifi};
 use mowbite_installer::run::Goal;
 use mowbite_installer::run::Run;
-use mowbite_installer::secret::Secret;
 use mowbite_installer::sign::Signers;
-use mowbite_installer::text::{Bar, Owner, explain, german, text_of, word};
+use mowbite_installer::text::{Bar, Owner, explain, german, stopped, text_of, word};
 use mowbite_installer::tron::module::{SPACE, Tron, before, check_wifi};
 use mowbite_installer::tron::port::UsbPort;
 use mowbite_installer::tron::{tables, texts::TEXTS};
-use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared, goal_id, goal_of};
+use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared, goal_id, goal_of, wifi_of};
 use mowbite_installer::{fetch, release};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -104,16 +103,11 @@ fn start_args(params: &Value) -> Result<(Args, Option<Wifi>), &'static str> {
     }
     let wifi = match goal {
         Goal::Install => {
-            let name = params["wifi_name"].as_str().unwrap_or_default();
-            if name.is_empty() {
+            let wifi = wifi_of(params);
+            if wifi.name.is_empty() {
                 return Err("frame.wifi_missing");
             }
-            let key = params["wifi_key"].as_str().unwrap_or_default();
-            Some(Wifi {
-                name: name.to_owned(),
-                key: Secret::new(key.to_owned()),
-                hidden: params["wifi_hidden"] == true,
-            })
+            Some(wifi)
         }
         Goal::Check | Goal::Back => None,
     };
@@ -155,12 +149,7 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
             .ok()
             .flatten()
             .is_some_and(|run| run.writing);
-        let text = if half_written {
-            "frame.incomplete"
-        } else {
-            "frame.nothing_written"
-        };
-        owner.end(false, word(text), &[]);
+        owner.end(false, stopped(!half_written), &[]);
         Ok(false)
     };
     let (tron, tables) = match tron(&args, &signers, &owner) {
@@ -171,8 +160,8 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
     let mut typed = wifi;
     let mut last = String::new();
     let mut take_wifi = || {
+        // Checked above, before the download.
         if let Some(wifi) = typed.take() {
-            tron.check_wifi(&wifi.name, wifi.key.expose())?;
             last = wifi.name.clone();
             return Ok(wifi);
         }
@@ -210,6 +199,7 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
 async fn page_mode() -> Result<bool> {
     let shared = Arc::new(Shared::default());
     let server = Server::start(shared.clone())?;
+    let wifi_now = mowbite_installer::net::current_wifi();
     shared.update(|v| {
         v.lang = if german() { "de" } else { "en" };
         v.view = "start";
@@ -218,7 +208,7 @@ async fn page_mode() -> Result<bool> {
                 .insert(goal_id(goal), text_of(TEXTS, before(goal)).to_owned());
         }
         v.store = default_store().display().to_string();
-        v.wifi_now = mowbite_installer::net::current_wifi();
+        v.wifi_now = wifi_now;
         v.space = SPACE;
     });
     let url = server.url();

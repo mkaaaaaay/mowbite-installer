@@ -392,10 +392,7 @@ fn for_install(
             .replace("{name}", &setup.name)
             .replace("{sheet}", &store.join(SHEET).display().to_string()),
     );
-    let wifi = wifi()?;
-    inputs.wifi_name = wifi.name;
-    inputs.wifi_key = wifi.key;
-    inputs.wifi_hidden = wifi.hidden;
+    inputs.wifi = wifi()?;
     inputs.device_name = setup.name;
     inputs.setup_wifi_key = setup.key;
     inputs.install_id = setup.install_id;

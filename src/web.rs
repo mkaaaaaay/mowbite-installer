@@ -663,6 +663,16 @@ pub fn goal_id(goal: Goal) -> &'static str {
     }
 }
 
+/// The Wi-Fi fields the page sends with a start or an answer.
+pub fn wifi_of(fields: &Value) -> crate::mower::Wifi {
+    let field = |name: &str| fields[name].as_str().unwrap_or_default().to_owned();
+    crate::mower::Wifi {
+        name: field("wifi_name"),
+        key: Secret::new(field("wifi_key")),
+        hidden: fields["wifi_hidden"] == true,
+    }
+}
+
 /// The owner on the page: says into the log, shows the step, asks with buttons and waits for the click.
 pub struct PageOwner {
     shared: Arc<Shared>,
@@ -796,14 +806,7 @@ impl PageOwner {
         ];
         let chosen = self.ask("warn", text, vec![], answers, Some(name.to_owned()));
         let fields = self.fields.take();
-        (chosen == Some("use")).then(|| {
-            let field = |name: &str| fields[name].as_str().unwrap_or_default().to_owned();
-            crate::mower::Wifi {
-                name: field("wifi_name"),
-                key: Secret::new(field("wifi_key")),
-                hidden: fields["wifi_hidden"] == true,
-            }
-        })
+        (chosen == Some("use")).then(|| wifi_of(&fields))
     }
 
     fn answer(value: &'static str, label: &str, hint: Option<&str>) -> Answer {

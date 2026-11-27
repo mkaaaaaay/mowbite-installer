@@ -10,7 +10,7 @@ use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use std::cell::{Cell, RefCell};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 pub const SERVICE: &str = "_mowbite._tcp.local.";
@@ -138,7 +138,16 @@ pub fn current_wifi() -> Option<String> {
     } else {
         wifi_of_nmcli(&asked(
             "nmcli",
-            &["-t", "-f", "ACTIVE,SSID", "device", "wifi"],
+            &[
+                "-t",
+                "-f",
+                "ACTIVE,SSID",
+                "device",
+                "wifi",
+                "list",
+                "--rescan",
+                "no",
+            ],
         )?)
     }
 }
@@ -185,13 +194,8 @@ async fn resolve(name: String) -> Vec<IpAddr> {
 
 /// Whether addr takes a connection at all, so a silent address costs REACH and not ANSWER.
 async fn reachable(addr: IpAddr, port: u16) -> bool {
-    let probe = tokio::task::spawn_blocking(move || {
-        TcpStream::connect_timeout(&SocketAddr::new(addr, port), REACH).is_ok()
-    });
-    matches!(
-        tokio::time::timeout(REACH + Duration::from_secs(1), probe).await,
-        Ok(Ok(true))
-    )
+    let probe = tokio::net::TcpStream::connect(SocketAddr::new(addr, port));
+    matches!(tokio::time::timeout(REACH, probe).await, Ok(Ok(_)))
 }
 
 /// Finds the mower by its name (from the pack) and confirms its start; remembers the address that answered and
@@ -242,8 +246,12 @@ impl Confirm {
     /// and on its setup Wi-Fi.
     async fn candidates(&self) -> Result<Vec<(IpAddr, u16)>> {
         let name = self.name.borrow().clone();
-        let mut out: Vec<(IpAddr, u16)> = find(BROWSE)
-            .await?
+        let (browsed, local, plain) = tokio::join!(
+            find(BROWSE),
+            resolve(format!("{name}.local")),
+            resolve(name.clone())
+        );
+        let mut out: Vec<(IpAddr, u16)> = browsed?
             .into_iter()
             .filter(|(host, _, _)| {
                 host.strip_suffix(".local")
@@ -252,13 +260,11 @@ impl Confirm {
             })
             .map(|(_, addr, port)| (addr, port))
             .collect();
-        for name in [format!("{name}.local"), name] {
-            out.extend(resolve(name).await.into_iter().map(|a| (a, BROKER)));
-        }
+        out.extend(local.into_iter().chain(plain).map(|a| (a, BROKER)));
         out.extend(self.given.get().map(|a| (a, BROKER)));
         out.push(SETUP_AP);
-        let mut seen = Vec::new();
-        out.retain(|c| !seen.contains(c) && (seen.push(*c), true).1);
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|c| seen.insert(*c));
         Ok(out)
     }
 }
