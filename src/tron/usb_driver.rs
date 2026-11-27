@@ -35,11 +35,14 @@ pub const ACCESS_DECLINED: &str = "tron.usb_access_declined";
 pub const ACCESS_FAILED: &str = "tron.usb_access_failed";
 pub const ACCESS_MANUAL: &str = "tron.usb_access_manual";
 /// The rule: read and write for the user at the desk (uaccess), for the Tron in every USB mode.
+#[cfg(target_os = "linux")]
 const RULE: &str = r#"SUBSYSTEM=="usb", ATTR{idVendor}=="2207", ATTR{idProduct}=="350b", MODE="0660", TAG+="uaccess""#;
+#[cfg(target_os = "linux")]
 const RULE_FILE: &str = "/etc/udev/rules.d/70-mowbite-tron.rules";
 
 /// The only thing run as root: write the rule, load it and apply it to the Tron already on USB. Fixed text, nothing
 /// from outside goes in.
+#[cfg(target_os = "linux")]
 fn rule_script() -> String {
     format!(
         "umask 022 && printf '%s\\n' '{RULE}' > {RULE_FILE} && udevadm control --reload-rules && \
@@ -68,6 +71,7 @@ pub async fn install() -> Result<()> {
 }
 
 /// What pkexec's end means: 126 and 127 are its own for a password not given or not accepted.
+#[cfg(target_os = "linux")]
 fn pkexec_outcome(ran: std::io::Result<Option<i32>>) -> Result<()> {
     match ran {
         Ok(Some(0)) => Ok(()),
@@ -149,6 +153,7 @@ fn run() -> Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_rule_script_writes_one_fixed_rule() {
         let script = rule_script();
@@ -163,6 +168,7 @@ mod tests {
         assert!(!RULE.contains('\''));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn exit_codes_of_pkexec() {
         assert!(pkexec_outcome(Ok(Some(0))).is_ok());
