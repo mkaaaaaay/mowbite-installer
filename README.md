@@ -74,12 +74,14 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 
 ## What you need
 
-- A PC with Windows 10 or 11 (x64) or Linux (x86_64), with internet for the download.
+- A PC with Windows 10 or 11 (x64) or Linux (x86_64), with internet for the download. macOS is not supported.
 - The Tron on vendor software 1.3.32 or 1.3.33. The installer checks it before writing.
 - Free space: about 25 GB for the backup and 16 GB for work files. Both can be on an external disk.
 - A USB-C data cable.
 - The Tron with its battery at least half full, off its charging station.
-- The name and key of your Wi-Fi.
+- The name and key of your Wi-Fi. It has to be the network your PC is on, since the installer looks for the mower
+  there after the write: no guest Wi-Fi. WPA2 or WPA2+WPA3 with a key of 8 to 63 plain characters; hidden networks
+  work, open ones and WPA3-only ones do not.
 - On Linux the installer sets up USB access to the Tron itself and asks once for your password (pkexec). Without
   pkexec, put this udev rule in `/etc/udev/rules.d/70-mowbite-tron.rules`:
 
@@ -96,20 +98,26 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 1. **Download** the installer for your PC from the
    [releases](https://github.com/mkaaaaaay/mowbite-installer/releases) of this repo.
    On Windows keep `mowbite-usb-driver.exe` and `libwdi.dll` next to `mowbite-installer.exe`.
-2. **Start it** without arguments. It opens its page in your browser, in English or German as your browser is set.
+2. **Start it** without arguments. It opens its page in your browser, in English or German as your PC is set.
    The page runs on your own PC only and ends with the installer.
+   - Windows may warn about an unknown app, as the files are not code-signed yet: choose "More info", then "Run
+     anyway". If the firewall asks, allow the installer on private networks, it looks for the mower there.
+   - On Linux make the file executable and start it in a terminal: `chmod +x mowbite-installer`, then
+     `./mowbite-installer`.
 3. **Choose what it should do** and the backup folder: install MowBite OS, back up and check only (writes nothing to
-   the mower, installing later goes on from the same backup), or write the vendor system back. For an installation
+   the mower, at the end you can install right away), or write the vendor system back. For an installation
    it also asks for the name and key of your Wi-Fi: the key goes only to the mower.
 4. **Connect the Tron** when the page asks for it.
    1. Battery in, Tron off and not on its charging station.
    2. Take off the upper camera unit. A USB-C socket sits behind it.
    3. Connect the cable from this socket to the PC.
    4. Hold button B and switch the Tron on. Let go when the installer sees the Tron.
-5. **Let it run.** From there it runs by itself and keeps the PC awake. Before it writes, the page shows what the
-   checks found and asks you. The backup alone takes about 30 to 55 minutes, plan for one to two hours in all. If it
+5. **Let it run.** From there it runs by itself and keeps the PC awake; leave the lid of a laptop open. Before it
+   writes, the page shows what the checks found and asks you. The backup alone takes about 30 to 55 minutes, plan for one to two hours in all. If it
    stops, start it again with the same folder.
-6. **Open the app** with the button at the end. Map, RTK and the safety measurement follow in the setup of the
+6. **Open the app** with the button at the end. Should the installer not find the mower on your network, the page
+   tells what to check and offers to write again with another Wi-Fi. Then unplug the cable and put the camera unit
+   back on. Map, RTK and the safety measurement follow in the setup of the
    MowBite app. Until then the mower only takes remote control and the blade stays locked.
 
 <details>

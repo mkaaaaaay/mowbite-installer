@@ -3,7 +3,7 @@
 
 use crate::awake::Awake;
 use crate::mower::{
-    BaseImage, Cancel, Ctx, Finding, Inputs, Log, Mower, Progress, Tables, WorkDir,
+    BaseImage, Cancel, Ctx, Finding, Inputs, Log, Mower, Progress, Tables, Wifi, WorkDir,
 };
 use crate::run::{Driver, Goal, Next, Step};
 use crate::secret::Secret;
@@ -39,6 +39,14 @@ pub enum Back {
     Again,
     /// Write again with another Wi-Fi for the mower.
     OtherWifi,
+}
+
+/// What the frame asks the owner beyond the answers of a question.
+pub trait Typed {
+    /// Another Wi-Fi for the mower, after a failed start.
+    fn wifi(&mut self) -> Result<Wifi>;
+    /// What an install needs beside a check (the Wi-Fi, name and keys of the mower), into inputs.
+    fn for_install(&mut self, inputs: &mut Inputs) -> Result<()>;
 }
 
 /// What the owner needs while the mower is not found on the network.
@@ -99,6 +107,8 @@ pub trait Owner {
     fn helped(&self) -> Option<Help> {
         None
     }
+    /// The run goes on with another goal (install after a check).
+    fn goal(&self, _goal: Goal) {}
     /// Where the app of the mower is, once it was found.
     fn app(&self, _link: &str) {}
     /// The run ended, reached (ok) or not; more: what is left to do by hand.
@@ -314,6 +324,11 @@ const STEPS: &[(&str, &str, &str)] = &[
          signatures.",
     ),
     (
+        "release.kept",
+        "Keine Verbindung zu GitHub. Der Installer nimmt die Dateien, die er früher geladen und geprüft hat.",
+        "No connection to GitHub. The installer takes the files it downloaded and checked before.",
+    ),
+    (
         "release.check_base",
         "Der Installer prüft das Grundsystem, ein paar Minuten.",
         "The installer checks the base system, a few minutes.",
@@ -358,6 +373,71 @@ const FRAME: &[(&str, &str, &str)] = &[
         "Diesen PC bis zum Ende wach halten, Deckel offen: der Installer konnte den Ruhezustand nicht sperren.",
         "Keep this PC awake until the end, lid open: it could not be kept from sleeping.",
     ),
+    (
+        "frame.awake_lid",
+        "Den Deckel dieses PCs bis zum Ende offen lassen: zugeklappt schläft er ein, auch wenn der Installer ihn \
+         sonst wach hält.",
+        "Keep the lid of this PC open until the end: closed it goes to sleep, although the installer keeps it awake \
+         otherwise.",
+    ),
+    (
+        "frame.other_mower",
+        "Das ist ein anderer Mäher als der, dessen Sicherung in diesem Ordner liegt. Den richtigen Mäher anschließen, \
+         oder für diesen Mäher den Installer mit einem neuen, leeren Sicherungsordner starten.",
+        "This is another mower than the one whose backup is in this folder. Connect the right mower, or start the \
+         installer with a new, empty backup folder for this one.",
+    ),
+    (
+        "frame.no_backup",
+        "In diesem Ordner liegt keine Sicherung dieses Mähers. Den Ordner wählen, in den der Installer ihn gesichert \
+         hat.",
+        "This folder holds no backup of this mower. Choose the folder the installer backed it up into.",
+    ),
+    (
+        "frame.other_kind",
+        "Die Sicherung in diesem Ordner gehört zu einem anderen Mähertyp.",
+        "The backup in this folder belongs to another kind of mower.",
+    ),
+    (
+        "frame.half_written_check",
+        "Das System auf dem Mäher ist nicht vollständig. Mit diesem Sicherungsordner installieren oder das \
+         Hersteller-System zurückschreiben.",
+        "The system on the mower is not complete. Install with this backup folder or write the vendor system back.",
+    ),
+    (
+        "frame.download_failed",
+        "Die Dateien der Version ließen sich nicht von GitHub laden. Die Internetverbindung prüfen und den Installer \
+         erneut starten.",
+        "The files of the release could not be downloaded from GitHub. Check the internet connection and start the \
+         installer again.",
+    ),
+    (
+        "frame.ask_wifi_name",
+        "Name deines WLANs:",
+        "Name of your Wi-Fi:",
+    ),
+    (
+        "frame.ask_wifi_key",
+        "WLAN-Schlüssel (wird nicht angezeigt):",
+        "Wi-Fi key (not shown):",
+    ),
+    (
+        "frame.ask_wifi_hidden",
+        "Ist das WLAN versteckt (sendet seinen Namen nicht aus)? [j/N]",
+        "Is the Wi-Fi hidden (it does not send its name)? [y/N]",
+    ),
+    (
+        "frame.install_now",
+        "Jetzt gleich MowBite OS installieren? Der Mäher bleibt dafür angeschlossen, wie er ist. Vor dem Schreiben \
+         wird noch einmal gefragt.",
+        "Install MowBite OS right now? The mower stays connected as it is. You are asked once more before the write.",
+    ),
+    (
+        "frame.answer_install_now",
+        "Jetzt installieren",
+        "Install now",
+    ),
+    ("frame.answer_later", "Später", "Later"),
     (
         "frame.awake_failed_ssh",
         "Über SSH gestartet: dort darf der Installer den Ruhezustand dieses PCs nicht sperren. Den PC bis zum Ende \
@@ -522,9 +602,9 @@ const FRAME: &[(&str, &str, &str)] = &[
     ),
     (
         "frame.checked_next",
-        "Zum Installieren den Installer mit install und diesem Sicherungsordner ({folder}) starten: er macht mit \
+        "Zum Installieren den Installer erneut starten und denselben Sicherungsordner ({folder}) wählen: er macht mit \
          dieser Sicherung weiter.",
-        "To install MowBite OS, start the installer with install and this backup folder ({folder}): it goes on \
+        "To install MowBite OS, start the installer again and choose the same backup folder ({folder}): it goes on \
          from this backup.",
     ),
     (
@@ -712,19 +792,29 @@ pub fn text_of<'a>(texts: &[(&str, &'a str, &'a str)], code: &'a str) -> &'a str
         .map_or(code, |&(_, de, en)| if german() { de } else { en })
 }
 
-/// An error with a code in its chain ("tron.no_serial: ...") with the text of the code from there on.
-fn explain(texts: &[(&str, &str, &str)], error: &anyhow::Error) -> String {
+/// An error with a code in its chain ("tron.no_serial: ..." or the code alone) with the text of the code from there
+/// on; codes of the mower module and of the frame.
+pub fn explain(texts: &[(&str, &str, &str)], error: &anyhow::Error) -> String {
     let causes: Vec<String> = error.chain().map(ToString::to_string).collect();
     for (i, cause) in causes.iter().enumerate() {
-        if let Some((code, rest)) = cause.split_once(": ")
-            && texts.iter().any(|(key, _, _)| *key == code)
-        {
-            let rest = std::iter::once(rest)
-                .chain(causes[i + 1..].iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(": ");
-            return format!("{} ({rest})", text_of(texts, code));
+        let (code, rest) = cause.split_once(": ").unwrap_or((cause, ""));
+        if !texts.iter().chain(FRAME).any(|(key, _, _)| *key == code) {
+            continue;
         }
+        let text = match text_of(texts, code) {
+            same if same == code => word(code),
+            text => text,
+        };
+        let rest = std::iter::once(rest)
+            .chain(causes[i + 1..].iter().map(String::as_str))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(": ");
+        return if rest.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{text} ({rest})")
+        };
     }
     causes.join(": ")
 }
@@ -769,7 +859,7 @@ pub async fn run<M: Mower, F: FirstStart>(
     owner: &dyn Owner,
     progress: &dyn Progress,
     cancel: &Cancel,
-    wifi: &mut dyn FnMut() -> Result<(String, Secret<String>)>,
+    typed: &mut dyn Typed,
 ) -> Result<bool> {
     let root = store.root().to_path_buf();
     let texts = mower.texts();
@@ -788,7 +878,12 @@ pub async fn run<M: Mower, F: FirstStart>(
         return Ok(false);
     }
     let _awake = match Awake::hold("MowBite installer reads or writes the mower") {
-        Ok(awake) => Some(awake),
+        Ok(awake) => {
+            if !awake.lid {
+                owner.say(word("frame.awake_lid"));
+            }
+            Some(awake)
+        }
         Err(_) => {
             // Over SSH polkit refuses the lock without a password: say why.
             let ssh = std::env::var_os("SSH_CONNECTION").is_some();
@@ -817,25 +912,9 @@ pub async fn run<M: Mower, F: FirstStart>(
         );
         Ok(false)
     };
-    // Applies what the owner chose after an unfinished write or a failed start; false when no Wi-Fi came.
-    let mut choose =
-        |driver: &mut Driver<'_, M>, inputs: &mut Inputs, back: Back| -> Result<bool> {
-            match back {
-                Back::Vendor => driver.choose(true)?,
-                Back::Again => driver.choose(false)?,
-                Back::OtherWifi => {
-                    let Ok((name, key)) = wifi() else {
-                        return Ok(false);
-                    };
-                    inputs.wifi_name = name;
-                    inputs.wifi_key = key;
-                    driver.choose_changed()?;
-                }
-            }
-            Ok(true)
-        };
     loop {
-        if cancel.is_set() && !driver.run.writing {
+        // Between two steps nothing is under way: leave() tells whether the system on the mower is whole.
+        if cancel.is_set() {
             owner.say(word("frame.stopped"));
             return leave(&mut driver, owner);
         }
@@ -860,8 +939,12 @@ pub async fn run<M: Mower, F: FirstStart>(
         let next = match result {
             Ok(next) => next,
             Err(error) => {
-                owner.error(&explain(texts, &error));
                 log.info("error", &format!("{error:#}"));
+                if cancel.is_set() {
+                    owner.say(word("frame.stopped"));
+                    return leave(&mut driver, owner);
+                }
+                owner.error(&explain(texts, &error));
                 if driver.mendable() && owner.again() {
                     driver.reconnect()?;
                     waiting_since = None;
@@ -938,7 +1021,7 @@ pub async fn run<M: Mower, F: FirstStart>(
                 let goal = driver.run.goal;
                 let chosen = owner.back(word(back_question(goal)), goal == Goal::Install);
                 if !match chosen {
-                    Some(back) => choose(&mut driver, inputs, back)?,
+                    Some(back) => choose(&mut driver, inputs, back, typed)?,
                     None => false,
                 } {
                     return leave(&mut driver, owner);
@@ -1033,7 +1116,7 @@ pub async fn run<M: Mower, F: FirstStart>(
                     };
                     owner.say(&why);
                     if !match owner.back(&why, true) {
-                        Some(back) => choose(&mut driver, inputs, back)?,
+                        Some(back) => choose(&mut driver, inputs, back, typed)?,
                         None => false,
                     } {
                         return Ok(false);
@@ -1049,10 +1132,28 @@ pub async fn run<M: Mower, F: FirstStart>(
             Next::Checked(findings) => {
                 owner.say(word("frame.checked"));
                 show(owner, texts, &findings);
+                // Installing right away spares switching the mower off and on, after which the backup may not fit.
+                if owner.agree(&Ask {
+                    findings: vec![word("frame.checked").to_owned()],
+                    text: word("frame.install_now").to_owned(),
+                    yes: word("frame.answer_install_now"),
+                    no: word("frame.answer_later"),
+                }) {
+                    match typed.for_install(inputs) {
+                        Ok(()) => {
+                            owner.goal(Goal::Install);
+                            driver.install_now()?;
+                            continue;
+                        }
+                        Err(error) => owner.error(&explain(texts, &error)),
+                    }
+                }
+                let more: Vec<String> =
+                    later(texts, mower.after(Goal::Check)).into_iter().collect();
                 owner.end(
                     true,
                     &word("frame.checked_next").replace("{folder}", &root.display().to_string()),
-                    &[],
+                    &more,
                 );
                 return Ok(true);
             }
@@ -1089,6 +1190,29 @@ pub async fn run<M: Mower, F: FirstStart>(
             }
         }
     }
+}
+
+/// Applies what the owner chose after an unfinished write or a failed start; false when no Wi-Fi came.
+fn choose<M: Mower>(
+    driver: &mut Driver<'_, M>,
+    inputs: &mut Inputs,
+    back: Back,
+    typed: &mut dyn Typed,
+) -> Result<bool> {
+    match back {
+        Back::Vendor => driver.choose(true)?,
+        Back::Again => driver.choose(false)?,
+        Back::OtherWifi => {
+            let Ok(wifi) = typed.wifi() else {
+                return Ok(false);
+            };
+            inputs.wifi_name = wifi.name;
+            inputs.wifi_key = wifi.key;
+            inputs.wifi_hidden = wifi.hidden;
+            driver.choose_changed()?;
+        }
+    }
+    Ok(true)
 }
 
 /// The text of a code of the mower module, when it names one.
@@ -1193,8 +1317,20 @@ mod tests {
         }
     }
 
-    fn other_wifi() -> Result<(String, Secret<String>)> {
-        Ok(("Gast".into(), Secret::new("anderes123".into())))
+    /// Another Wi-Fi when asked; an install after a check goes on with the inputs of the world.
+    struct Gast;
+
+    impl Typed for Gast {
+        fn wifi(&mut self) -> Result<Wifi> {
+            Ok(Wifi {
+                name: "Gast".into(),
+                key: Secret::new("anderes123".into()),
+                hidden: true,
+            })
+        }
+        fn for_install(&mut self, _: &mut Inputs) -> Result<()> {
+            Ok(())
+        }
     }
 
     async fn go(
@@ -1216,7 +1352,7 @@ mod tests {
             owner,
             &Bar::new(&[]),
             &w.cancel,
-            &mut other_wifi,
+            &mut Gast,
         )
         .await
     }
@@ -1259,7 +1395,7 @@ mod tests {
             &owner,
             &Bar::new(&[]),
             &w.cancel,
-            &mut other_wifi,
+            &mut Gast,
         )
         .await
         .unwrap();
@@ -1277,6 +1413,36 @@ mod tests {
         assert!(go(&mut w, &fake, &owner, vec![]).await.unwrap());
         assert_eq!((fake.ran("backup"), fake.ran("check")), (1, 2));
         assert_eq!(fake.ran("write"), 1);
+    }
+
+    // Installing right after the check: the mower stays as it is, nothing is read or checked twice.
+    #[tokio::test(start_paused = true)]
+    async fn a_check_goes_on_to_install_on_a_yes() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        let owner = Script::agreeing();
+        let first = Confirms::new(vec![]);
+        let done = run(
+            &fake,
+            &mut w.store,
+            &w.work,
+            &w.tables,
+            &w.base,
+            &mut w.inputs,
+            Goal::Check,
+            &first,
+            &owner,
+            &Bar::new(&[]),
+            &w.cancel,
+            &mut Gast,
+        )
+        .await;
+        assert!(done.unwrap());
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["open", "backup", "check", "prepare", "write"]
+        );
+        assert!(owner.ended.borrow()[0].contains(word("frame.done_install")));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1348,6 +1514,7 @@ mod tests {
         assert!(go(&mut w, &fake, &owner, not_yet).await.unwrap());
         assert_eq!(w.inputs.wifi_name, "Gast");
         assert_eq!(w.inputs.wifi_key.expose(), "anderes123");
+        assert!(w.inputs.wifi_hidden);
         assert_eq!(
             (fake.ran("prepare"), fake.ran("write"), fake.ran("back")),
             (2, 2, 0)
@@ -1374,7 +1541,7 @@ mod tests {
             &owner,
             &Bar::new(&[]),
             &w.cancel,
-            &mut other_wifi,
+            &mut Gast,
         )
         .await;
         assert!(done.unwrap());
@@ -1521,7 +1688,7 @@ mod tests {
             &owner,
             &Bar::new(&[]),
             &w.cancel,
-            &mut other_wifi,
+            &mut Gast,
         )
         .await;
         assert!(back.unwrap());
@@ -1569,7 +1736,7 @@ mod tests {
             &owner,
             &Bar::new(&[]),
             &w.cancel,
-            &mut other_wifi,
+            &mut Gast,
         )
         .await;
         assert!(!back.unwrap());

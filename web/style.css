@@ -332,6 +332,19 @@ p {
   margin-left: 4px;
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+}
+
+.cancel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .checks {
   margin: 0;
   padding-left: 18px;

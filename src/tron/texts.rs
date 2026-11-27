@@ -235,8 +235,10 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     ),
     (
         "tron.before_check",
-        "Vorher: Akku mindestens halb voll, etwa 25 GB frei im Sicherungsordner.",
-        "Before you start: battery at least half full, about 25 GB free in the backup folder.",
+        "Vorher: Akku mindestens halb voll, etwa 25 GB frei im Sicherungsordner. Am Ende kannst du gleich \
+         installieren. Später geht es mit derselben Sicherung nur weiter, wenn die Tron dazwischen nicht startet.",
+        "Before you start: battery at least half full, about 25 GB free in the backup folder. At the end you can \
+         install right away. Later it goes on from the same backup only if the Tron does not start in between.",
     ),
     (
         "tron.before_back",
@@ -244,6 +246,29 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
          voll. Zurückschreiben ist bisher nur unter Linux erprobt.",
         "Before you start: choose the backup folder of this Tron (the installer checks that it fits), battery at \
          least half full. Writing back has been tried on Linux only so far.",
+    ),
+    (
+        "tron.wifi_name_bad",
+        "Der WLAN-Name hat 1 bis 32 Zeichen (Umlaute zählen doppelt).",
+        "The Wi-Fi name has 1 to 32 characters (accented letters count twice).",
+    ),
+    (
+        "tron.wifi_key_bad",
+        "Der WLAN-Schlüssel hat 8 bis 63 Zeichen, ohne Umlaute und andere Zeichen außerhalb von ASCII. Offene WLANs \
+         und reines WPA3 kann der Installer nicht eintragen: am Router WPA2 oder WPA2+WPA3 einstellen.",
+        "The Wi-Fi key has 8 to 63 characters, without accented letters and other characters outside ASCII. The \
+         installer cannot set up open networks and WPA3-only ones: set the router to WPA2 or WPA2+WPA3.",
+    ),
+    (
+        "tron.after_check",
+        "Bis zum Installieren die Tron nicht einschalten und nicht auf die Ladestation stellen, sonst passt die \
+         Sicherung nicht mehr und der Installer braucht einen neuen Ordner. Jetzt das USB-Kabel abziehen und den Akku \
+         herausnehmen, damit die Tron aus ist. Die Kamera-Einheit wieder aufsetzen und festschrauben. Zum \
+         Installieren den Akku einsetzen und weiter wie beim ersten Mal (Taste beim Einschalten halten).",
+        "Until you install, don't switch the Tron on and don't put it on its charging station, or the backup no \
+         longer matches and the installer needs a new folder. Now unplug the USB cable and take the battery out so \
+         the Tron is off. Put the camera unit back on and screw it tight. To install, put the battery back and go on \
+         as the first time (hold the button while switching on).",
     ),
     (
         "tron.after",

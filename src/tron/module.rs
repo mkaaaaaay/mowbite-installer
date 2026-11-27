@@ -163,6 +163,15 @@ pub fn before(goal: Goal) -> &'static str {
     }
 }
 
+/// Name and key of a Wi-Fi as the pack of a Tron can hold them.
+pub fn check_wifi(name: &str, key: &str) -> Result<()> {
+    ensure!(
+        (1..=32).contains(&name.len()) && !name.chars().any(char::is_control),
+        "tron.wifi_name_bad"
+    );
+    contents::psk(key).map(|_| ())
+}
+
 impl<P: Port> Mower for Tron<P> {
     type Device = TronDisk<P::Disk>;
 
@@ -192,7 +201,7 @@ impl<P: Port> Mower for Tron<P> {
     fn after(&self, goal: Goal) -> &'static str {
         match goal {
             Goal::Install | Goal::Back => "tron.after",
-            Goal::Check => "",
+            Goal::Check => "tron.after_check",
         }
     }
 
@@ -205,11 +214,7 @@ impl<P: Port> Mower for Tron<P> {
     }
 
     fn check_wifi(&self, name: &str, key: &str) -> Result<()> {
-        ensure!(
-            (1..=32).contains(&name.len()),
-            "a Wi-Fi name has 1 to 32 bytes"
-        );
-        contents::psk(key).map(|_| ())
+        check_wifi(name, key)
     }
 
     fn check_inputs(&self, base: &BaseImage, inputs: &Inputs) -> Result<()> {
@@ -639,6 +644,7 @@ mod tests {
         Inputs {
             wifi_name: "Heim".into(),
             wifi_key: Secret::new("geheim123".into()),
+            wifi_hidden: false,
             device_name: "mowbite-ab12".into(),
             setup_wifi_key: Secret::new("x".into()),
             install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),

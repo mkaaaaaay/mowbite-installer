@@ -21,23 +21,23 @@ fn ssid(name: &str) -> String {
     name.bytes().map(|b| format!("{b};")).collect()
 }
 
-/// A WPA key as a keyfile string: printable ASCII only, spaces and backslashes escaped. The frame checks typed keys
-/// with it too.
+/// A WPA key as a keyfile string: a passphrase of 8 to 63 printable ASCII characters (spaces and backslashes
+/// escaped) or the 64 hex digits of the key itself, as the standard has it. The frame checks typed keys with it too.
 pub fn psk(key: &str) -> Result<String> {
-    ensure!(
-        (8..=63).contains(&key.len()) && key.bytes().all(|b| (0x20..0x7f).contains(&b)),
-        "a Wi-Fi key has 8 to 63 printable characters"
-    );
+    let phrase = (8..=63).contains(&key.len()) && key.bytes().all(|b| (0x20..0x7f).contains(&b));
+    let raw = key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit());
+    ensure!(phrase || raw, "tron.wifi_key_bad");
     Ok(key.replace('\\', "\\\\").replace(' ', "\\s"))
 }
 
-fn home_wifi(id: &str, name: &str, key: &str) -> Result<String> {
+fn home_wifi(id: &str, name: &str, key: &str, hidden: bool) -> Result<String> {
     Ok(format!(
         "[connection]\nid={id}\ntype=wifi\ninterface-name=wlan0\nautoconnect=true\n\n\
-         [wifi]\nmode=infrastructure\nssid={}\n\n\
+         [wifi]\nmode=infrastructure\nssid={}\n{}\n\
          [wifi-security]\nkey-mgmt=wpa-psk\npsk={}\n\n\
          [ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n",
         ssid(name),
+        if hidden { "hidden=true\n" } else { "" },
         psk(key)?
     ))
 }
@@ -99,7 +99,13 @@ pub fn build(vendor: &Ext4, known: &Known, inputs: &Inputs, mtime: u64) -> Resul
         &format!("{CONNECTIONS}/{id}.nmconnection"),
         0o600,
         (0, 0),
-        home_wifi(&id, &inputs.wifi_name, inputs.wifi_key.expose())?.as_bytes(),
+        home_wifi(
+            &id,
+            &inputs.wifi_name,
+            inputs.wifi_key.expose(),
+            inputs.wifi_hidden,
+        )?
+        .as_bytes(),
     )?;
     a.file(
         &format!("{CONNECTIONS}/mowbite-setup.nmconnection"),
@@ -131,6 +137,7 @@ mod tests {
         Inputs {
             wifi_name: "Heim; Netz".into(),
             wifi_key: Secret::new("ge heim\\123".into()),
+            wifi_hidden: false,
             device_name: "mowbite-ab12".into(),
             setup_wifi_key: Secret::new("setup-key-1".into()),
             install_id: Secret::new("0123456789abcdef0123456789abcdef".into()),
@@ -238,6 +245,15 @@ mod tests {
     #[test]
     fn bad_names_and_keys_are_refused() {
         assert!(psk("short").is_err());
+        assert!(psk("schlüssel123").is_err());
+        assert!(psk(&"a1".repeat(32)).is_ok());
+        assert!(psk(&"g1".repeat(32)).is_err());
+        let shown = home_wifi("id", "Heim", "geheim123", false).unwrap();
+        assert!(!shown.contains("hidden"));
+        let hidden = home_wifi("id", "Heim", "geheim123", true).unwrap();
+        assert!(hidden.contains(
+            "[wifi]\nmode=infrastructure\nssid=72;101;105;109;\nhidden=true\n\n[wifi-security]"
+        ));
         assert!(psk("tab\tinside1").is_err());
         assert!(psk(&"x".repeat(64)).is_err());
         assert!(hostname("MowBite").is_err());

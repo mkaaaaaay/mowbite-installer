@@ -164,6 +164,9 @@ pub struct View {
     /// What the mower needs, for the free space the page shows at the backup folder.
     #[serde(skip)]
     pub space: crate::mower::Space,
+    /// The run stops at the next step when asked: nothing is being written.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub can_cancel: bool,
     /// The folder dialog of the system is open.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub picking: bool,
@@ -216,6 +219,8 @@ pub struct Shared {
     view: Mutex<View>,
     inbox: Mutex<Inbox>,
     arrived: Condvar,
+    /// Set from the page while View.can_cancel.
+    pub cancel: crate::mower::Cancel,
     /// Opens the folder dialog in a thread of its own, so the page goes on polling meanwhile.
     picker: OnceLock<SyncSender<PathBuf>>,
 }
@@ -517,6 +522,12 @@ fn answer(request: &Request, port: u16, key: &str, shared: &Shared) -> Reply {
                         fields: body["fields"].clone(),
                     });
                 }
+                "cancel" => {
+                    if !shared.view.lock().unwrap().can_cancel {
+                        return Reply::status("409 Conflict");
+                    }
+                    shared.cancel.set();
+                }
                 // Only while the mower is looked for.
                 "help" => {
                     let help = match body["address"].as_str().map(str::trim) {
@@ -655,7 +666,7 @@ pub fn goal_id(goal: Goal) -> &'static str {
 /// The owner on the page: says into the log, shows the step, asks with buttons and waits for the click.
 pub struct PageOwner {
     shared: Arc<Shared>,
-    goal: Goal,
+    goal: std::cell::Cell<Goal>,
     texts: &'static [(&'static str, &'static str, &'static str)],
     at: std::cell::Cell<Option<Step>>,
     /// The furthest step of the list reached: those before it are done.
@@ -677,7 +688,7 @@ impl PageOwner {
     ) -> Self {
         let owner = PageOwner {
             shared,
-            goal,
+            goal: std::cell::Cell::new(goal),
             texts,
             at: Default::default(),
             reached: Default::default(),
@@ -698,7 +709,7 @@ impl PageOwner {
 
     /// The list of steps with the current one in `state`.
     fn mark(&self, state: &'static str) {
-        let list = steps_of(self.goal);
+        let list = steps_of(self.goal.get());
         let current = self
             .at
             .get()
@@ -774,7 +785,7 @@ impl PageOwner {
 
     /// Asks for the Wi-Fi of the mower again, starting from name; refused says why the last one was not taken.
     /// None when the owner ends the run instead.
-    pub fn wifi(&self, name: &str, refused: Option<&str>) -> Option<(String, Secret<String>)> {
+    pub fn wifi(&self, name: &str, refused: Option<&str>) -> Option<crate::mower::Wifi> {
         let text = match refused {
             Some(refused) => format!("{refused} {}", word("frame.wifi_again")),
             None => word("frame.wifi_again").to_owned(),
@@ -787,7 +798,11 @@ impl PageOwner {
         let fields = self.fields.take();
         (chosen == Some("use")).then(|| {
             let field = |name: &str| fields[name].as_str().unwrap_or_default().to_owned();
-            (field("wifi_name"), Secret::new(field("wifi_key")))
+            crate::mower::Wifi {
+                name: field("wifi_name"),
+                key: Secret::new(field("wifi_key")),
+                hidden: fields["wifi_hidden"] == true,
+            }
         })
     }
 
@@ -806,7 +821,7 @@ impl Owner for PageOwner {
     }
 
     fn at(&self, step: Step) {
-        let list = steps_of(self.goal);
+        let list = steps_of(self.goal.get());
         if let Some(i) = list.iter().position(|s| *s == step)
             && i > self.reached.get()
         {
@@ -815,6 +830,7 @@ impl Owner for PageOwner {
         let moved = self.at.replace(Some(step)) != Some(step);
         self.shared.update(|v| {
             v.progress = None;
+            v.can_cancel = !matches!(step, Step::Write | Step::FirstStart | Step::Done);
             // The text of the step before says nothing about this one.
             if moved {
                 v.detail = None;
@@ -929,6 +945,12 @@ impl Owner for PageOwner {
         self.shared.take_help()
     }
 
+    fn goal(&self, goal: Goal) {
+        self.goal.set(goal);
+        self.shared.update(|v| v.goal = goal_id(goal));
+        self.mark("running");
+    }
+
     fn app(&self, link: &str) {
         *self.app.borrow_mut() = Some(link.to_owned());
     }
@@ -957,7 +979,7 @@ impl Owner for PageOwner {
             .app
             .borrow()
             .clone()
-            .filter(|_| ok && self.goal == Goal::Install);
+            .filter(|_| ok && self.goal.get() == Goal::Install);
         self.shared.set_setup_key(None);
         self.shared.update(|v| {
             v.question = None;
@@ -965,6 +987,7 @@ impl Owner for PageOwner {
             v.setup_wifi = None;
             v.progress = None;
             v.detail = None;
+            v.can_cancel = false;
             v.end = Some(Note {
                 tone: if ok { "good" } else { "bad" },
                 text: match error {
@@ -973,7 +996,7 @@ impl Owner for PageOwner {
                 },
                 code: None,
                 link,
-                keep: self.goal != Goal::Back,
+                keep: self.goal.get() != Goal::Back,
                 more: more.to_vec(),
             });
         });
@@ -1243,12 +1266,12 @@ mod tests {
         shared.push(Input::Answer {
             question: 1,
             answer: "use".into(),
-            fields: serde_json::json!({"wifi_name": "Gast", "wifi_key": "anderes123"}),
+            fields: serde_json::json!({"wifi_name": "Gast", "wifi_key": "anderes123", "wifi_hidden": true}),
         });
-        let (name, key) = owner.wifi("Heim", None).unwrap();
+        let wifi = owner.wifi("Heim", None).unwrap();
         assert_eq!(
-            (name.as_str(), key.expose().as_str()),
-            ("Gast", "anderes123")
+            (wifi.name.as_str(), wifi.key.expose().as_str(), wifi.hidden),
+            ("Gast", "anderes123", true)
         );
         shared.push(Input::Answer {
             question: 2,
@@ -1260,6 +1283,36 @@ mod tests {
             !String::from_utf8(shared.state(0))
                 .unwrap()
                 .contains("anderes123")
+        );
+    }
+
+    #[test]
+    fn a_cancel_only_while_nothing_is_written() {
+        let shared = Arc::new(Shared::default());
+        let cancel = request("POST", &format!("/{KEY}/cancel"), HOST, Some(PAGE), "{}");
+        let owner = PageOwner::new(shared.clone(), Goal::Install, &[]);
+        owner.at(Step::Write);
+        assert_eq!(status(&cancel, &shared), "409 Conflict");
+        assert!(!shared.cancel.is_set());
+        owner.at(Step::Backup);
+        assert_eq!(status(&cancel, &shared), "200 OK");
+        assert!(shared.cancel.is_set());
+    }
+
+    // A check that goes on to install shows the steps of an install.
+    #[test]
+    fn the_steps_follow_the_goal() {
+        let shared = Arc::new(Shared::default());
+        let owner = PageOwner::new(shared.clone(), Goal::Check, &[]);
+        owner.at(Step::Check);
+        assert_eq!(shared.view.lock().unwrap().steps.len(), 3);
+        owner.goal(Goal::Install);
+        owner.at(Step::Agree);
+        let view = shared.view.lock().unwrap();
+        assert_eq!((view.goal, view.steps.len()), ("install", 7));
+        assert_eq!(
+            (view.steps[2].state, view.steps[3].state),
+            ("ok", "running")
         );
     }
 

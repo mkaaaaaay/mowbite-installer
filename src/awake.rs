@@ -6,15 +6,24 @@ use anyhow::Result;
 pub struct Awake {
     #[cfg(unix)]
     child: std::process::Child,
+    /// A closed lid does not send the PC to sleep either.
+    pub lid: bool,
 }
 
 impl Awake {
+    /// With the lid switch where logind lets a user hold it, else sleep and idle only.
     #[cfg(unix)]
     pub fn hold(why: &str) -> Result<Awake> {
+        Self::hold_what(why, "sleep:idle:handle-lid-switch", true)
+            .or_else(|_| Self::hold_what(why, "sleep:idle", false))
+    }
+
+    #[cfg(unix)]
+    fn hold_what(why: &str, what: &str, lid: bool) -> Result<Awake> {
         use std::process::{Command, Stdio};
         let child = Command::new("systemd-inhibit")
+            .arg(format!("--what={what}"))
             .args([
-                "--what=sleep:idle",
                 "--who=mowbite-installer",
                 "--mode=block",
                 // A refusal is fine: the frame tells the owner to keep the PC awake instead of a password prompt.
@@ -32,7 +41,7 @@ impl Awake {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        let mut awake = Awake { child };
+        let mut awake = Awake { child, lid };
         // logind refusing the lock ends systemd-inhibit at once.
         std::thread::sleep(std::time::Duration::from_millis(300));
         if let Some(status) = awake.child.try_wait()? {
@@ -52,7 +61,8 @@ impl Awake {
             before != 0,
             "Windows did not take the request to stay awake"
         );
-        Ok(Awake {})
+        // The request does not cover a closed lid.
+        Ok(Awake { lid: false })
     }
 }
 

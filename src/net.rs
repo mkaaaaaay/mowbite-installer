@@ -197,8 +197,8 @@ async fn reachable(addr: IpAddr, port: u16) -> bool {
 /// Finds the mower by its name (from the pack) and confirms its start; remembers the address that answered and
 /// looks again once it does not. Whatever answers has to prove the install id, so a wrong address does no harm.
 pub struct Confirm {
-    pub name: String,
-    install_id: Secret<String>,
+    name: RefCell<String>,
+    install_id: RefCell<Secret<String>>,
     at: RefCell<Vec<(IpAddr, u16)>>,
     given: Cell<Option<IpAddr>>,
     reached: Cell<Option<IpAddr>>,
@@ -207,17 +207,27 @@ pub struct Confirm {
 impl Confirm {
     pub fn new(name: &str, install_id: Secret<String>) -> Self {
         Confirm {
-            name: name.to_owned(),
-            install_id,
+            name: RefCell::new(name.to_owned()),
+            install_id: RefCell::new(install_id),
             at: RefCell::new(Vec::new()),
             given: Cell::new(None),
             reached: Cell::new(None),
         }
     }
 
+    /// Another mower to look for: a check that goes on to install learns name and id only then.
+    pub fn aim(&self, name: &str, install_id: Secret<String>) {
+        *self.name.borrow_mut() = name.to_owned();
+        *self.install_id.borrow_mut() = install_id;
+        self.at.borrow_mut().clear();
+    }
+
     async fn ask(&self, addr: IpAddr, port: u16) -> Result<Option<String>> {
         let challenge = crate::secret::random_hex(32)?;
-        let proof = hmac_sha256(self.install_id.expose().as_bytes(), challenge.as_bytes());
+        let proof = hmac_sha256(
+            self.install_id.borrow().expose().as_bytes(),
+            challenge.as_bytes(),
+        );
         let answer = call(
             addr,
             port,
@@ -231,17 +241,18 @@ impl Confirm {
     /// Where the mower may be: announced under its name, known to the resolver of the system, given by the owner,
     /// and on its setup Wi-Fi.
     async fn candidates(&self) -> Result<Vec<(IpAddr, u16)>> {
+        let name = self.name.borrow().clone();
         let mut out: Vec<(IpAddr, u16)> = find(BROWSE)
             .await?
             .into_iter()
             .filter(|(host, _, _)| {
                 host.strip_suffix(".local")
                     .unwrap_or(host)
-                    .eq_ignore_ascii_case(&self.name)
+                    .eq_ignore_ascii_case(&name)
             })
             .map(|(_, addr, port)| (addr, port))
             .collect();
-        for name in [format!("{}.local", self.name), self.name.clone()] {
+        for name in [format!("{name}.local"), name] {
             out.extend(resolve(name).await.into_iter().map(|a| (a, BROKER)));
         }
         out.extend(self.given.get().map(|a| (a, BROKER)));
@@ -259,7 +270,7 @@ impl FirstStart for Confirm {
             *self.at.borrow_mut() = found;
         }
         let candidates = self.at.borrow().clone();
-        let mut last = format!("{} not seen on the network yet", self.name);
+        let mut last = format!("{} not seen on the network yet", self.name.borrow());
         for (addr, port) in candidates {
             if !reachable(addr, port).await {
                 continue;

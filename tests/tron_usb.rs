@@ -45,6 +45,7 @@ fn os_bundle() -> Inputs {
     Inputs {
         wifi_name: String::new(),
         wifi_key: Secret::new(String::new()),
+        wifi_hidden: false,
         device_name: String::new(),
         setup_wifi_key: Secret::new(String::new()),
         install_id: Secret::new(String::new()),

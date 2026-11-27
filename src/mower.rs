@@ -186,10 +186,19 @@ pub struct BaseImage {
     pub pack: Vec<(u64, u64)>,
 }
 
+/// The Wi-Fi the mower is to join, as the owner typed it.
+pub struct Wifi {
+    pub name: String,
+    pub key: Secret<String>,
+    /// The network does not send its name; the mower asks for it by name.
+    pub hidden: bool,
+}
+
 /// What the owner typed and what the frame loaded; the module only puts it into the pack.
 pub struct Inputs {
     pub wifi_name: String,
     pub wifi_key: Secret<String>,
+    pub wifi_hidden: bool,
     pub device_name: String,
     pub setup_wifi_key: Secret<String>,
     /// 32 hex digits from the sheet: the mower proves its answers on the network with it.
@@ -204,6 +213,7 @@ impl Inputs {
         Inputs {
             wifi_name: String::new(),
             wifi_key: Secret::new(String::new()),
+            wifi_hidden: false,
             device_name: String::new(),
             setup_wifi_key: Secret::new(String::new()),
             install_id: Secret::new(String::new()),

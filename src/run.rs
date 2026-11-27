@@ -208,12 +208,10 @@ impl<'m, M: Mower> Driver<'m, M> {
             None => Run::described(store_root, goal)?,
         };
         let run = match kept {
-            Some(run) if run.mower != mower.id() => bail!("this backup belongs to a {}", run.mower),
-            Some(run) if run.writing && goal == Goal::Check => {
-                bail!(
-                    "the system on the mower is not complete: start install or back with this backup folder"
-                )
+            Some(run) if run.mower != mower.id() => {
+                bail!("frame.other_kind: the backup is of a {}", run.mower)
             }
+            Some(run) if run.writing && goal == Goal::Check => bail!("frame.half_written_check"),
             Some(run) => run.resumed(goal),
             None => Run::new(mower.id(), goal),
         };
@@ -330,10 +328,10 @@ impl<'m, M: Mower> Driver<'m, M> {
         if let Some(known) = &self.run.identity
             && (known.serial_hash != identity.serial_hash || known.table != identity.table)
         {
-            bail!("this is another mower than the one of this backup");
+            bail!("frame.other_mower");
         }
         if self.run.goal == Goal::Back && self.run.backup.is_none() {
-            bail!("no backup of this mower in this folder");
+            bail!("frame.no_backup");
         }
         self.run.identity = Some(identity);
         self.dev = Some(dev);
@@ -462,6 +460,17 @@ impl<'m, M: Mower> Driver<'m, M> {
         self.run.discard_plan();
         self.run.save(&self.root)?;
         Ok(true)
+    }
+
+    /// After a finished check: go on to the write with the same device and backup. The owner is asked before the
+    /// write as in every install.
+    pub fn install_now(&mut self) -> Result<()> {
+        ensure!(
+            self.run.goal == Goal::Check && self.run.step == Step::Done && self.dev.is_some(),
+            "no finished check to go on from"
+        );
+        self.run.goal = Goal::Install;
+        self.to(Step::Agree)
     }
 
     /// The frame confirmed the first start on the network.
@@ -610,6 +619,27 @@ mod tests {
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
         assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::WriteOrBack);
         assert_eq!(fake.ran("write"), 2);
+    }
+
+    #[tokio::test]
+    async fn install_goes_on_from_a_finished_check_without_checking_again() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert!(d.install_now().is_err());
+        let mut d = Driver::open(&fake, &w.root(), Goal::Check).unwrap();
+        assert!(matches!(
+            w.until_asked(&mut d).await.unwrap(),
+            Next::Checked(_)
+        ));
+        d.install_now().unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Agree(vec![]));
+        d.agree().unwrap();
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["open", "backup", "check", "prepare", "write"]
+        );
     }
 
     #[tokio::test]

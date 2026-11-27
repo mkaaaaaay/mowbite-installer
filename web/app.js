@@ -11,8 +11,8 @@ const T = {
   goal_install_text: ["Sichert den ganzen Speicher der Tron, prüft sie und schreibt dann MowBite OS.",
     "Backs up the whole flash of the Tron, checks it and then writes MowBite OS."],
   goal_check: ["Nur sichern und prüfen", "Back up and check only"],
-  goal_check_text: ["Schreibt nichts auf die Tron. Installieren geht später mit derselben Sicherung weiter.",
-    "Writes nothing to the Tron. Installing later goes on from the same backup."],
+  goal_check_text: ["Schreibt nichts auf die Tron. Am Ende kannst du gleich installieren oder später mit derselben Sicherung weitermachen.",
+    "Writes nothing to the Tron. At the end you can install right away, or go on later from the same backup."],
   goal_back: ["Hersteller-System zurückschreiben", "Write the vendor system back"],
   goal_back_text: ["Schreibt die Sicherung aus dem Ordner zurück auf die Tron.",
     "Writes the backup in the folder back to the Tron."],
@@ -35,6 +35,10 @@ const T = {
     "The Tron joins this Wi-Fi after the write. This PC has to be on the same network, only there the installer finds it: no guest Wi-Fi."],
   wifi_other: ["Dieser PC ist gerade im WLAN „{now}“. Gehört „{name}“ zu einem anderen Netz, findet der Installer die Tron dort nicht.",
     "This PC is on the Wi-Fi \"{now}\" right now. If \"{name}\" belongs to another network, the installer does not find the Tron there."],
+  wifi_hidden: ["Verstecktes WLAN (sendet seinen Namen nicht aus)", "Hidden Wi-Fi (does not send its name)"],
+  keep_awake: ["Diesen PC bis zum Ende an lassen und nicht zuklappen.", "Keep this PC on and its lid open until the end."],
+  cancel: ["Abbrechen", "Cancel"],
+  cancel_hint: ["Die Sicherung bleibt, beim nächsten Start geht es mit ihr weiter.", "The backup stays, the next start goes on from it."],
   show: ["Zeigen", "Show"],
   hide: ["Verbergen", "Hide"],
   run_install: ["MowBite OS wird installiert", "Installing MowBite OS"],
@@ -205,6 +209,9 @@ function renderRun(s) {
     }
     return el("li", { "data-state": step.state }, [el("span", { class: "mark", html: MARKS[step.state] || "" }), text]);
   }));
+  $("keep_awake").hidden = !!s.end;
+  $("cancel_row").hidden = !s.can_cancel || !!s.question || !!s.end;
+  $("cancel").disabled = sending;
   $("guide_card").hidden = !s.guide;
   if (s.guide) $("guide").replaceChildren(...s.guide.map((line) => el("li", { text: pick(line) })));
 }
@@ -233,6 +240,7 @@ function renderQuestion(s) {
     wifiAsked = q.id;
     $("q_wifi_name").value = q.wifi;
     $("q_wifi_key").value = "";
+    $("q_wifi_hidden").checked = $("wifi_hidden").checked;
   }
   // Buttons of the same weight, no focus, no Enter: each names what it does.
   $("answers").className = q.answers.length === 2 ? "buttons" : "buttons one";
@@ -240,7 +248,7 @@ function renderQuestion(s) {
     const button = el("button", { class: "button", type: "button", text: pick(answer.label) });
     button.disabled = sending;
     button.addEventListener("click", () => {
-      const fields = wifi ? { wifi_name: $("q_wifi_name").value, wifi_key: $("q_wifi_key").value } : undefined;
+      const fields = wifi ? { wifi_name: $("q_wifi_name").value, wifi_key: $("q_wifi_key").value, wifi_hidden: $("q_wifi_hidden").checked } : undefined;
       send("answer", { question: q.id, answer: answer.value, fields });
     });
     return answer.hint ? el("div", { class: "answer" }, [button, el("div", { class: "secondary", text: pick(answer.hint) })]) : button;
@@ -316,6 +324,8 @@ $("help_address_go").addEventListener("click", async () => {
 
 $("help_confirmed").addEventListener("click", () => send("help", { confirmed: true }));
 
+$("cancel").addEventListener("click", () => send("cancel", {}));
+
 $("setup_key_show").addEventListener("click", async () => {
   const shown = $("setup_key").dataset.shown === "1";
   if (shown) {
@@ -341,6 +351,7 @@ $("go").addEventListener("click", () => {
   if (goal === "install") {
     params.wifi_name = $("wifi_name").value;
     params.wifi_key = $("wifi_key").value;
+    params.wifi_hidden = $("wifi_hidden").checked;
   }
   send("start", params);
 });

@@ -3,12 +3,13 @@
 
 use anyhow::{Context, Result};
 use mowbite_installer::cli::{self, Args};
-use mowbite_installer::mower::{Mower, Progress, Tables};
+use mowbite_installer::mower::{Mower, Progress, Tables, Wifi};
 use mowbite_installer::run::Goal;
+use mowbite_installer::run::Run;
 use mowbite_installer::secret::Secret;
 use mowbite_installer::sign::Signers;
-use mowbite_installer::text::{Bar, Owner, german, text_of, word};
-use mowbite_installer::tron::module::{SPACE, Tron, before};
+use mowbite_installer::text::{Bar, Owner, explain, german, text_of, word};
+use mowbite_installer::tron::module::{SPACE, Tron, before, check_wifi};
 use mowbite_installer::tron::port::UsbPort;
 use mowbite_installer::tron::{tables, texts::TEXTS};
 use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared, goal_id, goal_of};
@@ -28,14 +29,20 @@ fn tron(
     signers: &Signers,
     progress: &dyn Progress,
 ) -> Result<(Tron<UsbPort>, Tables)> {
-    if args.download {
-        fetch::fetch(
+    if args.download
+        && let Err(error) = fetch::fetch(
             &fetch::Https::new(),
             signers,
             "tron",
             &args.release,
             progress,
-        )?;
+        )
+    {
+        // Without a way to GitHub a release loaded before serves; each of its files is checked again below.
+        if cli::tables(&args.release, signers, "tron").is_err() {
+            return Err(error.context("frame.download_failed"));
+        }
+        progress.step("release.kept");
     }
     let tables = cli::tables(&args.release, signers, "tron")?;
     let named = tables::loader(&tables.raw)?;
@@ -85,8 +92,6 @@ fn open_browser(url: &str) {
     }
 }
 
-type Wifi = (String, Secret<String>);
-
 /// What the page sent to start: the goal and the backup folder, for install the Wi-Fi.
 fn start_args(params: &Value) -> Result<(Args, Option<Wifi>), &'static str> {
     let goal = goal_of(params["goal"].as_str().unwrap_or_default()).ok_or("frame.store_missing")?;
@@ -104,7 +109,11 @@ fn start_args(params: &Value) -> Result<(Args, Option<Wifi>), &'static str> {
                 return Err("frame.wifi_missing");
             }
             let key = params["wifi_key"].as_str().unwrap_or_default();
-            Some((name.to_owned(), Secret::new(key.to_owned())))
+            Some(Wifi {
+                name: name.to_owned(),
+                key: Secret::new(key.to_owned()),
+                hidden: params["wifi_hidden"] == true,
+            })
         }
         Goal::Check | Goal::Back => None,
     };
@@ -132,12 +141,26 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
         more: Vec::new(),
     };
     let (args, wifi) = start_args(params).map_err(|code| refused(word(code).to_owned()))?;
-    cli::check_space(&args, SPACE).map_err(|error| refused(format!("{error:#}")))?;
+    // Before the download: a typo in the key costs no wait.
+    if let Some(wifi) = &wifi {
+        check_wifi(&wifi.name, wifi.key.expose())
+            .map_err(|error| refused(explain(TEXTS, &error)))?;
+    }
+    cli::check_space(&args, SPACE).map_err(|error| refused(explain(TEXTS, &error)))?;
     let signers = Signers::builtin();
     let owner = PageOwner::new(shared.clone(), args.goal, TEXTS);
     let ended = |error: anyhow::Error| {
-        owner.error(&format!("{error:#}"));
-        owner.end(false, word("frame.nothing_written"), &[]);
+        owner.error(&explain(TEXTS, &error));
+        let half_written = Run::load(&args.store)
+            .ok()
+            .flatten()
+            .is_some_and(|run| run.writing);
+        let text = if half_written {
+            "frame.incomplete"
+        } else {
+            "frame.nothing_written"
+        };
+        owner.end(false, word(text), &[]);
         Ok(false)
     };
     let (tron, tables) = match tron(&args, &signers, &owner) {
@@ -148,18 +171,18 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
     let mut typed = wifi;
     let mut last = String::new();
     let mut take_wifi = || {
-        if let Some((name, key)) = typed.take() {
-            tron.check_wifi(&name, key.expose())?;
-            last = name.clone();
-            return Ok((name, key));
+        if let Some(wifi) = typed.take() {
+            tron.check_wifi(&wifi.name, wifi.key.expose())?;
+            last = wifi.name.clone();
+            return Ok(wifi);
         }
         let mut refused: Option<String> = None;
         loop {
-            let (name, key) = owner.wifi(&last, refused.as_deref()).context("no Wi-Fi")?;
-            last = name.clone();
-            match tron.check_wifi(&name, key.expose()) {
-                Ok(()) => return Ok((name, key)),
-                Err(error) => refused = Some(format!("{error:#}.")),
+            let wifi = owner.wifi(&last, refused.as_deref()).context("no Wi-Fi")?;
+            last = wifi.name.clone();
+            match tron.check_wifi(&wifi.name, wifi.key.expose()) {
+                Ok(()) => return Ok(wifi),
+                Err(error) => refused = Some(explain(TEXTS, &error)),
             }
         }
     };
@@ -167,7 +190,7 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
         Ok(prepared) => prepared,
         Err(error) => {
             shared.update(|v| v.view = "start");
-            return Err(refused(format!("{error:#}")));
+            return Err(refused(explain(TEXTS, &error)));
         }
     };
     cli::go(
@@ -177,6 +200,7 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
         args.goal,
         &owner,
         &owner,
+        &shared.cancel,
         &mut take_wifi,
     )
     .await
@@ -239,7 +263,7 @@ fn main() -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),
         Err(error) => {
-            eprintln!("{error:#}");
+            eprintln!("{}", explain(TEXTS, &error));
             ExitCode::from(2)
         }
     }

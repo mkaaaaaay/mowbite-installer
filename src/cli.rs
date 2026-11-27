@@ -2,14 +2,16 @@
 //! files, which the installer downloads into the backup folder when none is given. Loads the release files against
 //! the built-in keys and asks the owner for the Wi-Fi.
 
-use crate::mower::{BaseImage, Bundle, Inputs, Mower, Progress, Space, Tables, WorkDir};
+use crate::mower::{
+    BaseImage, Bundle, Cancel, Inputs, Mower, Progress, Space, Tables, Wifi, WorkDir,
+};
 use crate::net::Confirm;
 use crate::release;
 use crate::run::Goal;
 use crate::secret::Secret;
 use crate::sign::Signers;
 use crate::store::Store;
-use crate::text::{self, Bar, Owner, Terminal};
+use crate::text::{self, Bar, Owner, Terminal, Typed};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
 use sha2::Digest;
@@ -276,24 +278,37 @@ pub fn setup(store: &Path) -> Result<Setup> {
 }
 
 /// Wi-Fi name and key of the home network, checked by the rules of the mower; the key is not shown while typed.
-fn ask_wifi<M: Mower>(mower: &M) -> Result<(String, Secret<String>)> {
-    loop {
-        print!("Name of your Wi-Fi: ");
+fn ask_wifi<M: Mower>(mower: &M) -> Result<Wifi> {
+    let typed = |ask: &str| -> Result<String> {
+        print!("{} ", text::word(ask));
         std::io::stdout().flush()?;
-        let mut name = String::new();
+        let mut line = String::new();
         ensure!(
-            std::io::stdin().read_line(&mut name)? > 0,
+            std::io::stdin().read_line(&mut line)? > 0,
             "no input: the Wi-Fi is needed"
         );
-        let name = name.trim_end_matches(['\r', '\n']).to_owned();
+        Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+    };
+    loop {
+        let name = typed("frame.ask_wifi_name")?;
         if name.is_empty() {
-            println!("Please type the name of your Wi-Fi.");
             continue;
         }
-        let key = Secret::new(rpassword::prompt_password("Wi-Fi key (not shown): ")?);
+        let key = Secret::new(rpassword::prompt_password(format!(
+            "{} ",
+            text::word("frame.ask_wifi_key")
+        ))?);
         match mower.check_wifi(&name, key.expose()) {
-            Ok(()) => return Ok((name, key)),
-            Err(e) => println!("{e:#}. Please again."),
+            Ok(()) => {
+                let hidden = ["j", "y", "ja", "yes"].contains(
+                    &typed("frame.ask_wifi_hidden")?
+                        .trim()
+                        .to_lowercase()
+                        .as_str(),
+                );
+                return Ok(Wifi { name, key, hidden });
+            }
+            Err(e) => println!("{}", text::explain(mower.texts(), &e)),
         }
     }
 }
@@ -313,7 +328,7 @@ pub fn prepare<M: Mower>(
     signers: &Signers,
     owner: &dyn Owner,
     progress: &dyn Progress,
-    wifi: &mut dyn FnMut() -> Result<(String, Secret<String>)>,
+    wifi: &mut dyn FnMut() -> Result<Wifi>,
 ) -> Result<Prepared> {
     let store = Store::open(&args.store)?;
     crate::store::private_dir(&args.work)?;
@@ -333,28 +348,13 @@ pub fn prepare<M: Mower>(
                     "the OS bundle needs base system {needs}, the release folder has {base_number}"
                 );
             }
-            let inputs = if args.goal == Goal::Check {
-                Inputs {
-                    bundles,
-                    ..Inputs::none()
-                }
-            } else {
-                let setup = setup(&args.store)?;
-                owner.say(
-                    &text::word("frame.mower_name")
-                        .replace("{name}", &setup.name)
-                        .replace("{sheet}", &args.store.join(SHEET).display().to_string()),
-                );
-                let (wifi_name, wifi_key) = wifi()?;
-                Inputs {
-                    wifi_name,
-                    wifi_key,
-                    device_name: setup.name,
-                    setup_wifi_key: setup.key,
-                    install_id: setup.install_id,
-                    bundles,
-                }
+            let mut inputs = Inputs {
+                bundles,
+                ..Inputs::none()
             };
+            if args.goal == Goal::Install {
+                for_install(&args.store, owner, wifi, &mut inputs)?;
+            }
             mower.check_inputs(&base, &inputs)?;
             (base, inputs)
         }
@@ -378,8 +378,59 @@ pub fn prepare<M: Mower>(
     })
 }
 
-/// Runs a prepared goal with this owner; wifi asks for another Wi-Fi after a failed start. Ok(true) when the goal
-/// was reached.
+/// What an install needs beside a check, into inputs: name and keys of the mower from the sheet of the backup
+/// folder and the Wi-Fi of the owner.
+fn for_install(
+    store: &Path,
+    owner: &dyn Owner,
+    wifi: &mut dyn FnMut() -> Result<Wifi>,
+    inputs: &mut Inputs,
+) -> Result<()> {
+    let setup = setup(store)?;
+    owner.say(
+        &text::word("frame.mower_name")
+            .replace("{name}", &setup.name)
+            .replace("{sheet}", &store.join(SHEET).display().to_string()),
+    );
+    let wifi = wifi()?;
+    inputs.wifi_name = wifi.name;
+    inputs.wifi_key = wifi.key;
+    inputs.wifi_hidden = wifi.hidden;
+    inputs.device_name = setup.name;
+    inputs.setup_wifi_key = setup.key;
+    inputs.install_id = setup.install_id;
+    Ok(())
+}
+
+/// What a run asks beyond its questions, through the Wi-Fi question of the terminal or the page.
+struct Asked<'a, M: Mower> {
+    mower: &'a M,
+    store: PathBuf,
+    base: &'a BaseImage,
+    owner: &'a dyn Owner,
+    first: &'a Confirm,
+    wifi: &'a mut dyn FnMut() -> Result<Wifi>,
+}
+
+impl<M: Mower> Typed for Asked<'_, M> {
+    fn wifi(&mut self) -> Result<Wifi> {
+        (self.wifi)()
+    }
+
+    fn for_install(&mut self, inputs: &mut Inputs) -> Result<()> {
+        for_install(&self.store, self.owner, self.wifi, inputs)?;
+        self.mower.check_inputs(self.base, inputs)?;
+        self.first.aim(
+            &inputs.device_name,
+            Secret::new(inputs.install_id.expose().clone()),
+        );
+        Ok(())
+    }
+}
+
+/// Runs a prepared goal with this owner; wifi asks for the Wi-Fi after a failed start or a check that goes on to
+/// install. Ok(true) when the goal was reached.
+#[allow(clippy::too_many_arguments)]
 pub async fn go<M: Mower>(
     mower: &M,
     prepared: &mut Prepared,
@@ -387,12 +438,21 @@ pub async fn go<M: Mower>(
     goal: Goal,
     owner: &dyn Owner,
     progress: &dyn Progress,
-    wifi: &mut dyn FnMut() -> Result<(String, Secret<String>)>,
+    cancel: &Cancel,
+    wifi: &mut dyn FnMut() -> Result<Wifi>,
 ) -> Result<bool> {
     let first = Confirm::new(
         &prepared.inputs.device_name,
         Secret::new(prepared.inputs.install_id.expose().clone()),
     );
+    let mut typed = Asked {
+        mower,
+        store: prepared.store.root().to_path_buf(),
+        base: &prepared.base,
+        owner,
+        first: &first,
+        wifi,
+    };
     text::run(
         mower,
         &mut prepared.store,
@@ -404,8 +464,8 @@ pub async fn go<M: Mower>(
         &first,
         owner,
         progress,
-        &Default::default(),
-        wifi,
+        cancel,
+        &mut typed,
     )
     .await
 }
@@ -437,6 +497,7 @@ pub async fn run<M: Mower>(
         args.goal,
         &Terminal,
         &bar,
+        &Cancel::default(),
         &mut wifi,
     )
     .await

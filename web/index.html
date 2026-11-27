@@ -41,6 +41,7 @@
           </span>
           <span class="secondary" data-t="wifi_key_hint"></span>
         </label>
+        <label class="check"><input id="wifi_hidden" type="checkbox"><span data-t="wifi_hidden"></span></label>
         <p class="secondary" data-t="wifi_needed"></p>
         <p class="note" data-tone="warn" id="wifi_other" hidden></p>
       </div>
@@ -65,6 +66,7 @@
             <button class="button small" type="button" id="q_wifi_key_show" data-t="show"></button>
           </span>
         </label>
+        <label class="check"><input id="q_wifi_hidden" type="checkbox"><span data-t="wifi_hidden"></span></label>
       </div>
       <div class="buttons" id="answers"></div>
     </section>
@@ -104,6 +106,11 @@
     <section class="card" id="run" hidden>
       <h2 id="run_title"></h2>
       <ol class="steps" id="steps"></ol>
+      <p class="secondary" id="keep_awake" data-t="keep_awake"></p>
+      <div class="cancel" id="cancel_row" hidden>
+        <button class="button small" type="button" id="cancel" data-t="cancel"></button>
+        <span class="secondary" data-t="cancel_hint"></span>
+      </div>
     </section>
 
     <section class="card" id="log_card" hidden>
