@@ -245,8 +245,16 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     ),
     (
         "tron.write",
-        "MowBite OS wird auf die Tron geschrieben.",
-        "Writing MowBite OS to the Tron.",
+        "MowBite OS wird auf die Tron geschrieben. Danach liest der Installer alles zur Prüfung zurück; der Balken \
+         zählt beides.",
+        "Writing MowBite OS to the Tron. Then the installer reads it all back to check it; the bar counts both.",
+    ),
+    (
+        "tron.write_back",
+        "Das Hersteller-System wird zurück auf die Tron geschrieben. Danach liest der Installer alles zur Prüfung \
+         zurück; der Balken zählt beides.",
+        "Writing the vendor system back to the Tron. Then the installer reads it all back to check it; the bar \
+         counts both.",
     ),
     (
         "tron.read_back",

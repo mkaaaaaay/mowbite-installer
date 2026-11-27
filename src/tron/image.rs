@@ -131,7 +131,7 @@ pub fn fill_base(base: &BaseImage, filled_pack: &[u8], out: &Path) -> Result<Str
 
 /// Writes plan.sectors sectors from `src` into the rootfs window and reads them back; Ok only when both match
 /// plan.sha256. Nothing outside first_sector..first_sector + partition_sectors is written. The caller checks the
-/// source against plan.sha256 before (the prepared image, or the unpacked backup).
+/// source against plan.sha256 before (the prepared image, or the unpacked backup) and names the step.
 pub async fn write_and_verify<D: Disk>(
     disk: D,
     src: &mut dyn Read,
@@ -152,7 +152,6 @@ pub async fn write_and_verify<D: Disk>(
     let mut buf = vec![0u8; COPY];
     let mut at = 0u64;
     let mut written = Sha256::new();
-    progress.step("tron.write");
     while at < plan.sectors {
         // Cancel counts only before the first block; after it the frame offers back or go on.
         if at == 0 && cancel.is_set() {

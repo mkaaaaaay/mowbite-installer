@@ -368,6 +368,7 @@ impl<P: Port> Mower for Tron<P> {
             .context(NothingWritten)
         );
         let mut src = File::open(&plan.image).context(NothingWritten)?;
+        ctx.progress.step("tron.write");
         let disk =
             image::write_and_verify(dev.disk, &mut src, plan, ctx.cancel, ctx.progress).await?;
         drop(src);
@@ -394,6 +395,7 @@ impl<P: Port> Mower for Tron<P> {
             .await
             .context(NothingWritten)?;
         let (plan, mut src) = back::plan(ctx.store, b, ctx.progress).context(NothingWritten)?;
+        ctx.progress.step("tron.write_back");
         let disk =
             image::write_and_verify(dev.disk, &mut src, &plan, ctx.cancel, ctx.progress).await?;
         self.port.restart(disk).await.context(WrittenNotRestarted)
