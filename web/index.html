@@ -15,6 +15,7 @@
       <img src="icon-192.png" alt="">
       <h1>MowBite Installer</h1>
     </header>
+    <p class="note" data-tone="bad" role="alert" id="lost" data-t="lost" hidden></p>
 
     <section class="card" id="start" hidden>
       <h2 data-t="start_title"></h2>
@@ -41,6 +42,7 @@
           <span class="secondary" data-t="wifi_key_hint"></span>
         </label>
         <p class="secondary" data-t="wifi_needed"></p>
+        <p class="note" data-tone="warn" id="wifi_other" hidden></p>
       </div>
       <p class="note" data-tone="bad" role="alert" id="start_error" hidden></p>
       <div class="buttons one"><button class="button" type="button" id="go" disabled></button></div>
@@ -53,12 +55,24 @@
 
     <section class="card" id="question" hidden>
       <div class="note" data-tone="warn" id="question_text"></div>
+      <div id="question_wifi" hidden>
+        <label class="field"><span data-t="wifi_name"></span>
+          <input id="q_wifi_name" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field"><span data-t="wifi_key"></span>
+          <span class="row">
+            <input id="q_wifi_key" type="password" autocomplete="off" spellcheck="false">
+            <button class="button small" type="button" id="q_wifi_key_show" data-t="show"></button>
+          </span>
+        </label>
+      </div>
       <div class="buttons" id="answers"></div>
     </section>
 
     <section class="card" id="setup_wifi" hidden>
       <h2 data-t="setup_wifi_title"></h2>
-      <p class="secondary" data-t="setup_wifi_text"></p>
+      <p id="setup_lead"></p>
+      <ul class="checks" id="setup_lines"></ul>
       <div class="wifi">
         <dl>
           <dt data-t="wifi_name"></dt><dd id="setup_name"></dd>
@@ -67,10 +81,21 @@
         </dl>
         <div class="qr" id="setup_qr" role="img"></div>
       </div>
+      <label class="field"><span data-t="help_address"></span>
+        <span class="row">
+          <input id="help_address" type="text" autocomplete="off" spellcheck="false" placeholder="192.168.178.50">
+          <button class="button small" type="button" id="help_address_go" data-t="help_address_go"></button>
+        </span>
+        <span class="secondary" data-tone="bad" id="help_address_bad" data-t="help_address_bad" hidden></span>
+      </label>
+      <div class="buttons one">
+        <button class="button" type="button" id="help_confirmed" data-t="help_confirmed"></button>
+      </div>
     </section>
 
     <section class="card" id="end" hidden>
       <p class="note" id="end_text"></p>
+      <div id="end_more"></div>
       <div class="buttons one" id="end_link" hidden></div>
       <p class="secondary" id="end_keep" data-t="end_keep" hidden></p>
       <p class="secondary" data-t="end_close"></p>

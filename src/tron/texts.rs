@@ -246,6 +246,22 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
          least half full. Writing back has been tried on Linux only so far.",
     ),
     (
+        "tron.after",
+        "Zum Schluss: das USB-Kabel abziehen, die Kamera-Einheit wieder aufsetzen und festschrauben, damit die Tron \
+         dicht bleibt, und die Tron auf ihre Ladestation stellen.",
+        "To finish: unplug the USB cable, put the camera unit back on and screw it tight so the Tron stays sealed, \
+         then place the Tron on its charging station.",
+    ),
+    (
+        "tron.setup_wifi_later",
+        "Findet die Tron später kein WLAN mehr: die Taste Ein/OK oben fünfmal kurz hintereinander drücken (innerhalb \
+         von 5 Sekunden). Ein steigender Ton heißt, das WLAN der Tron ist für 30 Minuten offen. Die Taste nicht \
+         gedrückt halten, das schaltet die Tron aus.",
+        "If the Tron can't find a Wi-Fi later: press the On/OK button on top five times quickly (within 5 seconds). \
+         A rising tone means the Tron's own Wi-Fi is open for 30 minutes. Don't hold the button, that switches the \
+         Tron off.",
+    ),
+    (
         "tron.backup",
         "Der Installer sichert den ganzen Speicher der Tron, die Bereiche zum Starten und den Systembereich doppelt. Das dauert etwa 30 bis \
          55 Minuten; die Tron bleibt dabei angeschlossen und eingeschaltet. Auf die Tron wird nichts geschrieben.",

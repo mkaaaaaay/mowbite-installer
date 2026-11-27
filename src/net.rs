@@ -9,15 +9,20 @@ use anyhow::{Context, Result, bail};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde_json::{Value, json};
 use sha2::Sha256;
-use std::cell::RefCell;
-use std::net::{IpAddr, Ipv4Addr};
+use std::cell::{Cell, RefCell};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 pub const SERVICE: &str = "_mowbite._tcp.local.";
 const BROWSE: Duration = Duration::from_secs(5);
 const ANSWER: Duration = Duration::from_secs(10);
-/// The broker on the setup Wi-Fi of the mower (shared mode of NetworkManager), tried when mDNS finds nothing.
-const SETUP_AP: (IpAddr, u16) = (IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1)), 1883);
+/// An address that takes no connection within this is not asked: a search round stays short.
+const REACH: Duration = Duration::from_secs(2);
+const RESOLVE: Duration = Duration::from_secs(3);
+const BROKER: u16 = 1883;
+/// The mower on its setup Wi-Fi (shared mode of NetworkManager), tried beside what the search finds.
+pub const SETUP_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1));
+const SETUP_AP: (IpAddr, u16) = (SETUP_ADDR, BROKER);
 
 /// Mowers announced on the local network: (host name, address, port), one row per IPv4 address.
 pub async fn find(wait: Duration) -> Result<Vec<(String, IpAddr, u16)>> {
@@ -116,6 +121,46 @@ pub async fn call(addr: IpAddr, port: u16, method: &str, params: Value) -> Resul
     answer
 }
 
+/// The Wi-Fi this PC is on, as the system tells it (NetworkManager, on Windows netsh); None on a cable or when it
+/// does not tell. The page starts from it, the owner may type another one.
+pub fn current_wifi() -> Option<String> {
+    let asked = |program: &str, args: &[&str]| {
+        let out = std::process::Command::new(program)
+            .args(args)
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        String::from_utf8(out.stdout).ok()
+    };
+    if cfg!(windows) {
+        wifi_of_netsh(&asked("netsh", &["wlan", "show", "interfaces"])?)
+    } else {
+        wifi_of_nmcli(&asked(
+            "nmcli",
+            &["-t", "-f", "ACTIVE,SSID", "device", "wifi"],
+        )?)
+    }
+}
+
+/// The active row of "ACTIVE,SSID" in the terse form of nmcli, where a colon in a name comes escaped.
+fn wifi_of_nmcli(out: &str) -> Option<String> {
+    out.lines()
+        .find_map(|line| line.strip_prefix("yes:"))
+        .map(|name| name.replace("\\:", ":").replace("\\\\", "\\"))
+        .filter(|name| !name.is_empty())
+}
+
+/// The SSID row of a connected interface. netsh writes in the code page of the console, so only a plain ASCII name
+/// is taken as it stands.
+fn wifi_of_netsh(out: &str) -> Option<String> {
+    out.lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(key, _)| key.trim() == "SSID")
+        .map(|(_, name)| name.trim().to_owned())
+        .filter(|name| !name.is_empty() && name.is_ascii())
+}
+
 fn rand_id() -> u64 {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -123,12 +168,40 @@ fn rand_id() -> u64 {
     (t as u64) ^ u64::from(std::process::id()).rotate_left(32)
 }
 
-/// Finds the mower by its name (from the pack) and confirms its start; remembers the addresses that answered and
-/// looks again once none does.
+/// IPv4 addresses the resolver of the system has for name: its own mDNS or the name the router keeps for the mower
+/// find it where the browse above is blocked (a firewall on this PC).
+async fn resolve(name: String) -> Vec<IpAddr> {
+    let lookup = tokio::task::spawn_blocking(move || {
+        (name.as_str(), BROKER)
+            .to_socket_addrs()
+            .map(|found| found.map(|a| a.ip()).filter(IpAddr::is_ipv4).collect())
+            .unwrap_or_default()
+    });
+    match tokio::time::timeout(RESOLVE, lookup).await {
+        Ok(Ok(found)) => found,
+        _ => Vec::new(),
+    }
+}
+
+/// Whether addr takes a connection at all, so a silent address costs REACH and not ANSWER.
+async fn reachable(addr: IpAddr, port: u16) -> bool {
+    let probe = tokio::task::spawn_blocking(move || {
+        TcpStream::connect_timeout(&SocketAddr::new(addr, port), REACH).is_ok()
+    });
+    matches!(
+        tokio::time::timeout(REACH + Duration::from_secs(1), probe).await,
+        Ok(Ok(true))
+    )
+}
+
+/// Finds the mower by its name (from the pack) and confirms its start; remembers the address that answered and
+/// looks again once it does not. Whatever answers has to prove the install id, so a wrong address does no harm.
 pub struct Confirm {
     pub name: String,
     install_id: Secret<String>,
     at: RefCell<Vec<(IpAddr, u16)>>,
+    given: Cell<Option<IpAddr>>,
+    reached: Cell<Option<IpAddr>>,
 }
 
 impl Confirm {
@@ -137,6 +210,8 @@ impl Confirm {
             name: name.to_owned(),
             install_id,
             at: RefCell::new(Vec::new()),
+            given: Cell::new(None),
+            reached: Cell::new(None),
         }
     }
 
@@ -152,39 +227,64 @@ impl Confirm {
         .await?;
         judge(&answer, &proof)
     }
+
+    /// Where the mower may be: announced under its name, known to the resolver of the system, given by the owner,
+    /// and on its setup Wi-Fi.
+    async fn candidates(&self) -> Result<Vec<(IpAddr, u16)>> {
+        let mut out: Vec<(IpAddr, u16)> = find(BROWSE)
+            .await?
+            .into_iter()
+            .filter(|(host, _, _)| {
+                host.strip_suffix(".local")
+                    .unwrap_or(host)
+                    .eq_ignore_ascii_case(&self.name)
+            })
+            .map(|(_, addr, port)| (addr, port))
+            .collect();
+        for name in [format!("{}.local", self.name), self.name.clone()] {
+            out.extend(resolve(name).await.into_iter().map(|a| (a, BROKER)));
+        }
+        out.extend(self.given.get().map(|a| (a, BROKER)));
+        out.push(SETUP_AP);
+        let mut seen = Vec::new();
+        out.retain(|c| !seen.contains(c) && (seen.push(*c), true).1);
+        Ok(out)
+    }
 }
 
 impl FirstStart for Confirm {
     async fn confirm(&self) -> Result<Option<String>> {
         if self.at.borrow().is_empty() {
-            let mut mine: Vec<(IpAddr, u16)> = find(BROWSE)
-                .await?
-                .into_iter()
-                .filter(|(host, _, _)| {
-                    host.strip_suffix(".local")
-                        .unwrap_or(host)
-                        .eq_ignore_ascii_case(&self.name)
-                })
-                .map(|(_, addr, port)| (addr, port))
-                .collect();
-            mine.push(SETUP_AP);
-            *self.at.borrow_mut() = mine;
+            let found = self.candidates().await?;
+            *self.at.borrow_mut() = found;
         }
         let candidates = self.at.borrow().clone();
         let mut last = format!("{} not seen on the network yet", self.name);
         for (addr, port) in candidates {
+            if !reachable(addr, port).await {
+                continue;
+            }
             match self.ask(addr, port).await {
                 Ok(answer) => {
                     *self.at.borrow_mut() = vec![(addr, port)];
+                    self.reached.set(Some(addr));
                     return Ok(answer);
                 }
-                // Reached only from the setup Wi-Fi; elsewhere its failure says nothing.
-                Err(_) if (addr, port) == SETUP_AP => {}
                 Err(e) => last = format!("{addr}: {e:#}"),
             }
         }
         self.at.borrow_mut().clear();
+        self.reached.set(None);
         Ok(Some(last))
+    }
+
+    fn reached(&self) -> Option<IpAddr> {
+        self.reached.get()
+    }
+
+    fn also_at(&self, addr: IpAddr) {
+        self.given.set(Some(addr));
+        self.at.borrow_mut().clear();
     }
 }
 
@@ -217,6 +317,21 @@ mod tests {
         );
         assert!(judge(&json!({"result": {"trial": true}}), "ab").is_err());
         assert!(judge(&json!({"id": "1"}), "ab").is_err());
+    }
+
+    #[test]
+    fn the_wifi_of_this_pc() {
+        assert_eq!(
+            wifi_of_nmcli("no:Nachbar\nyes:Heim\\: oben\nno:Gast\n").as_deref(),
+            Some("Heim: oben")
+        );
+        assert_eq!(wifi_of_nmcli("no:Nachbar\n"), None);
+        assert_eq!(wifi_of_nmcli(""), None);
+        let netsh = "\r\n    Name                   : WLAN\r\n    Status                 : Verbunden\r\n    \
+                     SSID                   : Heim 5\r\n    BSSID                  : 12:34:56:78:9a:bc\r\n";
+        assert_eq!(wifi_of_netsh(netsh).as_deref(), Some("Heim 5"));
+        assert_eq!(wifi_of_netsh("    Status : getrennt\r\n"), None);
+        assert_eq!(wifi_of_netsh("    SSID : Caf\u{e9}\r\n"), None);
     }
 
     #[test]

@@ -378,7 +378,8 @@ pub fn prepare<M: Mower>(
     })
 }
 
-/// Runs a prepared goal with this owner. Ok(true) when the goal was reached.
+/// Runs a prepared goal with this owner; wifi asks for another Wi-Fi after a failed start. Ok(true) when the goal
+/// was reached.
 pub async fn go<M: Mower>(
     mower: &M,
     prepared: &mut Prepared,
@@ -386,6 +387,7 @@ pub async fn go<M: Mower>(
     goal: Goal,
     owner: &dyn Owner,
     progress: &dyn Progress,
+    wifi: &mut dyn FnMut() -> Result<(String, Secret<String>)>,
 ) -> Result<bool> {
     let first = Confirm::new(
         &prepared.inputs.device_name,
@@ -397,12 +399,13 @@ pub async fn go<M: Mower>(
         &prepared.work,
         tables,
         &prepared.base,
-        &prepared.inputs,
+        &mut prepared.inputs,
         goal,
         &first,
         owner,
         progress,
         &Default::default(),
+        wifi,
     )
     .await
 }
@@ -425,10 +428,18 @@ pub async fn run<M: Mower>(
         println!("{}", text::text_of(mower.texts(), before));
     }
     let bar = Bar::new(mower.texts());
-    let mut prepared = prepare(mower, args, signers, &Terminal, &bar, &mut || {
-        ask_wifi(mower)
-    })?;
-    go(mower, &mut prepared, tables, args.goal, &Terminal, &bar).await
+    let mut wifi = || ask_wifi(mower);
+    let mut prepared = prepare(mower, args, signers, &Terminal, &bar, &mut wifi)?;
+    go(
+        mower,
+        &mut prepared,
+        tables,
+        args.goal,
+        &Terminal,
+        &bar,
+        &mut wifi,
+    )
+    .await
 }
 
 #[cfg(test)]

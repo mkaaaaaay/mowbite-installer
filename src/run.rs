@@ -176,7 +176,8 @@ pub enum Next {
     Connect,
     /// The mower is on USB, but the system has no driver for it yet: the owner lets the frame install it.
     UsbDriver,
-    /// The owner reads the warnings and agrees, or ends the run.
+    /// The owner reads what the checks found (warnings and notes, or nothing) and agrees to the write, or ends the
+    /// run.
     Agree(Vec<Finding>),
     /// Writing began and did not finish, or the new system did not start: write again or go back.
     WriteOrBack,
@@ -288,18 +289,12 @@ impl<'m, M: Mower> Driver<'m, M> {
                 Ok(Next::Go)
             }
             Step::Agree => {
-                let warnings: Vec<Finding> = self
-                    .run
-                    .findings
-                    .iter()
-                    .filter(|f| matches!(f, Finding::Warn { .. }))
-                    .cloned()
-                    .collect();
-                if warnings.is_empty() {
+                // Chosen after a write of this folder: the owner agreed before that write.
+                if self.chosen {
                     self.to(Step::Prepare)?;
                     return Ok(Next::Go);
                 }
-                Ok(Next::Agree(warnings))
+                Ok(Next::Agree(self.run.findings.clone()))
             }
             Step::Prepare => {
                 inputs.unchanged()?;
@@ -414,7 +409,7 @@ impl<'m, M: Mower> Driver<'m, M> {
         }
     }
 
-    /// The owner agreed to the warnings.
+    /// The owner agreed to the write.
     pub fn agree(&mut self) -> Result<()> {
         if self.run.step != Step::Agree {
             bail!("nothing to agree to now");
@@ -433,6 +428,12 @@ impl<'m, M: Mower> Driver<'m, M> {
         }
         self.chosen = true;
         self.to(Step::Connect)
+    }
+
+    /// After WriteOrBack: write MowBite OS again with other inputs (another Wi-Fi), so a prepared image goes.
+    pub fn choose_changed(&mut self) -> Result<()> {
+        self.run.discard_plan();
+        self.choose(false)
     }
 
     /// Whether an error here is mended by plugging in again: before writing a lost cable or a time out is.
@@ -490,11 +491,15 @@ mod tests {
         let fake = Fake::default();
         *fake.absent.borrow_mut() = true;
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Connect);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Connect);
         *fake.absent.borrow_mut() = false;
+        // Without any finding the owner is still asked before the write.
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Agree(vec![]));
+        assert_eq!(fake.ran("prepare"), 0);
+        d.agree().unwrap();
         assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
         d.started().unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Done);
         assert_eq!(
             *fake.calls.borrow(),
             ["open", "backup", "check", "prepare", "write"]
@@ -507,16 +512,18 @@ mod tests {
     async fn warnings_wait_for_the_owner_and_a_stop_ends_before_writing() {
         let mut w = World::new();
         let fake = Fake::default();
-        *fake.findings.borrow_mut() = vec![warn()];
+        let note = Finding::Info {
+            code: "tron.report".into(),
+            details: String::new(),
+        };
+        *fake.findings.borrow_mut() = vec![warn(), note.clone()];
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(
-            w.until_asked(&mut d).await.unwrap(),
-            Next::Agree(vec![warn()])
-        );
-        assert_eq!(
-            w.until_asked(&mut d).await.unwrap(),
-            Next::Agree(vec![warn()])
-        );
+        for _ in 0..2 {
+            assert_eq!(
+                w.until_asked(&mut d).await.unwrap(),
+                Next::Agree(vec![warn(), note.clone()])
+            );
+        }
         assert_eq!(fake.ran("prepare"), 0);
         d.agree().unwrap();
         assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
@@ -536,7 +543,7 @@ mod tests {
         assert_eq!(fake.ran("write"), 0);
         let mut again = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
         assert!(matches!(
-            w.until_asked(&mut again).await.unwrap(),
+            w.after_yes(&mut again).await.unwrap(),
             Next::Stopped(_)
         ));
     }
@@ -561,7 +568,7 @@ mod tests {
         drop(d);
         *fake.serial.borrow_mut() = "another".into();
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(w.after_yes(&mut d).await.is_err());
         assert_eq!(fake.ran("prepare"), 0);
     }
 
@@ -571,14 +578,14 @@ mod tests {
         let fake = Fake::default();
         *fake.fail_write.borrow_mut() = true;
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(w.after_yes(&mut d).await.is_err());
         drop(d);
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
         assert_eq!(d.run.step, Step::Write);
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::WriteOrBack);
         assert!(d.agree().is_err());
         d.choose(true).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Done);
         assert_eq!(fake.ran("back"), 1);
         assert_eq!(fake.ran("write"), 1);
     }
@@ -590,18 +597,18 @@ mod tests {
         let fake = Fake::default();
         *fake.fail_write.borrow_mut() = true;
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(w.after_yes(&mut d).await.is_err());
         *fake.fail_write.borrow_mut() = false;
         drop(d);
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::WriteOrBack);
         d.choose(false).unwrap();
         *fake.write_error.borrow_mut() = Some(anyhow::anyhow!("cancelled").context(NothingWritten));
-        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(w.after_yes(&mut d).await.is_err());
         assert!(d.run.writing);
         drop(d);
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::WriteOrBack);
         assert_eq!(fake.ran("write"), 2);
     }
 
@@ -610,17 +617,37 @@ mod tests {
         let mut w = World::new();
         let fake = Fake::default();
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Network);
         // Still listed right after the restart, gone, then back: only the last counts.
         *fake.seen.borrow_mut() = vec![true, false, true];
         assert!(!d.back_in_usb().await.unwrap());
         assert!(!d.back_in_usb().await.unwrap());
         assert!(d.back_in_usb().await.unwrap());
+        // The owner chose to write again: no second question before that write.
         d.choose(false).unwrap();
         assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
         assert_eq!(fake.ran("write"), 2);
         assert!(!d.run.left_usb);
         assert_eq!(fake.ran("backup"), 1);
+    }
+
+    // Another Wi-Fi after a failed start: the prepared image with the old one goes, a new one is made.
+    #[tokio::test]
+    async fn changed_inputs_prepare_again() {
+        let mut w = World::new();
+        let fake = Fake::default();
+        *fake.fail_write.borrow_mut() = true;
+        let image = w.dir.path().join("prepared.img");
+        *fake.image.borrow_mut() = image.clone();
+        let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
+        assert!(w.after_yes(&mut d).await.is_err());
+        assert!(image.exists());
+        *fake.fail_write.borrow_mut() = false;
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        d.choose_changed().unwrap();
+        assert!(!image.exists());
+        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!((fake.ran("prepare"), fake.ran("write")), (2, 2));
     }
 
     // A copy without dot files or a deleted .run.json: the way back comes from backup.json.
@@ -629,12 +656,12 @@ mod tests {
         let mut w = World::new();
         let fake = Fake::default();
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Network);
         drop(d);
         std::fs::remove_file(Run::path(&w.root())).unwrap();
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
         assert!(d.run.backup.is_some() && d.run.identity.is_some());
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Done);
         assert_eq!((fake.ran("backup"), fake.ran("back")), (1, 1));
     }
 
@@ -659,7 +686,7 @@ mod tests {
         let mut w = World::new();
         let fake = Fake::default();
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
-        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(w.after_yes(&mut d).await.is_err());
         assert_eq!(fake.ran("back"), 0);
     }
 
@@ -668,16 +695,16 @@ mod tests {
         let mut w = World::new();
         let fake = Fake::default();
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Network);
         d.started().unwrap();
         drop(d);
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
         assert_eq!((d.run.goal, d.run.step), (Goal::Back, Step::Connect));
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Done);
         assert_eq!(fake.ran("back"), 1);
         drop(d);
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Network);
         assert_eq!((fake.ran("backup"), fake.ran("write")), (1, 2));
     }
 
@@ -687,13 +714,13 @@ mod tests {
         let fake = Fake::default();
         *fake.fail_write.borrow_mut() = true;
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
-        assert!(w.until_asked(&mut d).await.is_err());
+        assert!(w.after_yes(&mut d).await.is_err());
         drop(d);
         // Half written: whatever the goal, first write again or back.
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::WriteOrBack);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::WriteOrBack);
         d.choose(true).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Done);
         assert_eq!(fake.ran("back"), 1);
 
         let mut w = World::new();
@@ -704,12 +731,12 @@ mod tests {
         }];
         let mut d = Driver::open(&fake, &w.root(), Goal::Install).unwrap();
         assert!(matches!(
-            w.until_asked(&mut d).await.unwrap(),
+            w.after_yes(&mut d).await.unwrap(),
             Next::Stopped(_)
         ));
         drop(d);
         let mut d = Driver::open(&fake, &w.root(), Goal::Back).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Done);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Done);
         assert_eq!((fake.ran("back"), fake.ran("write")), (1, 0));
     }
 

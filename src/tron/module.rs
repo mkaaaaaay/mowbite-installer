@@ -189,6 +189,17 @@ impl<P: Port> Mower for Tron<P> {
         before(goal)
     }
 
+    fn after(&self, goal: Goal) -> &'static str {
+        match goal {
+            Goal::Install | Goal::Back => "tron.after",
+            Goal::Check => "",
+        }
+    }
+
+    fn setup_wifi_later(&self) -> &'static str {
+        "tron.setup_wifi_later"
+    }
+
     fn space_needed(&self) -> Space {
         SPACE
     }
@@ -566,7 +577,7 @@ mod tests {
             },
         };
         let mut d = Driver::open(&tron, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Network);
         let after = std::fs::read(&path).unwrap();
         let r = rootfs_range();
         assert!(after[r.clone()] != before[r.clone()], "rootfs unchanged");
@@ -583,7 +594,7 @@ mod tests {
         tron.port.started.set(false);
         assert!(d.back_in_usb().await.unwrap());
         d.choose(true).unwrap();
-        let next = w.until_asked(&mut d).await.unwrap();
+        let next = w.after_yes(&mut d).await.unwrap();
         let now = std::fs::read(&path).unwrap();
         let diff = now.iter().zip(&before).position(|(a, b)| a != b);
         assert!(now == before, "back differs at {diff:?}");
@@ -744,7 +755,7 @@ mod tests {
         w.inputs.setup_wifi_key = Secret::new("setup-key-1".into());
         let tron = file_tron(&path);
         let mut d = Driver::open(&tron, &w.root(), Goal::Install).unwrap();
-        assert_eq!(w.until_asked(&mut d).await.unwrap(), Next::Network);
+        assert_eq!(w.after_yes(&mut d).await.unwrap(), Next::Network);
         let left: Vec<_> = std::fs::read_dir(&w.work.path).unwrap().collect();
         assert!(left.is_empty(), "{left:?}");
     }

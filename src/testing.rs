@@ -32,6 +32,8 @@ pub struct Fake {
     pub write_error: RefCell<Option<anyhow::Error>>,
     /// detect finds the mower without its driver until install_usb_driver ran.
     pub no_driver: RefCell<bool>,
+    /// Where prepare leaves its image; nowhere when empty.
+    pub image: RefCell<PathBuf>,
 }
 
 impl Fake {
@@ -114,12 +116,16 @@ impl Mower for Fake {
         _: &mut Ctx<'_>,
     ) -> Result<WritePlan> {
         self.calls.borrow_mut().push("prepare");
+        let image = self.image.borrow().clone();
+        if !image.as_os_str().is_empty() {
+            std::fs::write(&image, b"image")?;
+        }
         Ok(WritePlan {
             partition: "rootfs".into(),
             first_sector: 100,
             sectors: 100,
             partition_sectors: 100,
-            image: PathBuf::new(),
+            image,
             sha256: String::new(),
         })
     }
@@ -215,6 +221,16 @@ impl World {
         loop {
             match self.step(driver).await? {
                 Next::Go => continue,
+                other => return Ok(other),
+            }
+        }
+    }
+
+    // As until_asked, with a yes to the question before the write.
+    pub async fn after_yes<M: Mower>(&mut self, driver: &mut Driver<'_, M>) -> Result<Next> {
+        loop {
+            match self.until_asked(driver).await? {
+                Next::Agree(_) => driver.agree()?,
                 other => return Ok(other),
             }
         }

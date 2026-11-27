@@ -1,7 +1,8 @@
 // The page of the installer: shows the state the installer serves under its random path and sends the owner's answers.
 "use strict";
 
-const LANG = (navigator.language || "en").toLowerCase().startsWith("de") ? "de" : "en";
+// The language of the browser until the installer names its own, so its texts and the page agree.
+let LANG = (navigator.language || "en").toLowerCase().startsWith("de") ? "de" : "en";
 const PREVIEW = location.protocol === "file:" || new URLSearchParams(location.search).has("preview");
 
 const T = {
@@ -30,8 +31,10 @@ const T = {
   wifi_key: ["WLAN-Schlüssel", "Wi-Fi key"],
   wifi_key_hint: ["Kommt nur auf die Tron, nie ins Protokoll oder in den Sicherungsordner.",
     "Goes to the Tron only, never into the log or the backup folder."],
-  wifi_needed: ["Beide Felder braucht der erste Start: die Tron meldet sich darüber, damit der Installer sie findet.",
-    "The first start needs both: the Tron reports over it so that the installer finds it."],
+  wifi_needed: ["In dieses WLAN geht die Tron nach dem Schreiben. Dieser PC muss im selben Netz sein, nur dort findet der Installer sie: kein Gast-WLAN.",
+    "The Tron joins this Wi-Fi after the write. This PC has to be on the same network, only there the installer finds it: no guest Wi-Fi."],
+  wifi_other: ["Dieser PC ist gerade im WLAN „{now}“. Gehört „{name}“ zu einem anderen Netz, findet der Installer die Tron dort nicht.",
+    "This PC is on the Wi-Fi \"{now}\" right now. If \"{name}\" belongs to another network, the installer does not find the Tron there."],
   show: ["Zeigen", "Show"],
   hide: ["Verbergen", "Hide"],
   run_install: ["MowBite OS wird installiert", "Installing MowBite OS"],
@@ -55,16 +58,18 @@ const T = {
   step_first_start: ["Erster Start", "First start"],
   step_done: ["Fertig", "Done"],
   guide_title: ["Tron im USB-Modus anschließen", "Connect the Tron in USB mode"],
-  setup_wifi_title: ["WLAN der Tron", "Wi-Fi of the Tron"],
-  setup_wifi_text: ["Findet die Tron dein WLAN nicht, öffnet sie ihr eigenes. Mit diesem PC oder dem Handy verbinden, der Installer findet sie dann.",
-    "Should the Tron not find your Wi-Fi, it opens its own. Join it with this PC or your phone, the installer finds it then."],
+  setup_wifi_title: ["Tron noch nicht gefunden", "Tron not found yet"],
+  help_address: ["Adresse der Tron, falls dein Router sie zeigt", "Address of the Tron, if your router shows it"],
+  help_address_go: ["Dort suchen", "Look there"],
+  help_address_bad: ["Das ist keine Adresse wie 192.168.178.50.", "That is no address like 192.168.178.50."],
+  help_confirmed: ["Ich habe den Start in der App bestätigt", "I confirmed the start in the app"],
   log: ["Protokoll", "Log"],
   copy: ["Kopieren", "Copy"],
   copied: ["Kopiert", "Copied"],
   end_close: ["Du kannst dieses Fenster schließen. Der Installer endet von selbst.",
     "You can close this window. The installer ends by itself."],
-  lost: ["Keine Verbindung zum Installer. Läuft er noch? Im Terminal steht, was passiert ist.",
-    "No connection to the installer. Is it still running? The terminal shows what happened."],
+  lost: ["Keine Verbindung zum Installer, die Seite versucht es weiter. Läuft er nicht mehr, steht in seinem Fenster, was passiert ist: ihn dann neu starten, er öffnet eine neue Seite.",
+    "No connection to the installer, the page keeps trying. If it no longer runs, its window shows what happened: start it again then, it opens a new page."],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -91,6 +96,9 @@ let space = null;
 let spaceFor = "";
 let spaceTimer = null;
 let sending = false;
+// The question whose Wi-Fi fields are on the page, so a new state does not empty them.
+let wifiAsked = null;
+let failed = 0;
 
 function el(tag, attrs, children) {
   const node = document.createElement(tag);
@@ -130,6 +138,14 @@ function renderStart(s) {
     }
   }
   if (!$("store").value && s.store) $("store").value = s.store;
+  if (s.wifi_now && !$("wifi_name").dataset.filled) {
+    $("wifi_name").dataset.filled = "1";
+    if (!$("wifi_name").value) $("wifi_name").value = s.wifi_now;
+  }
+  const name = $("wifi_name").value;
+  const other = goal === "install" && s.wifi_now && name && name !== s.wifi_now;
+  $("wifi_other").hidden = !other;
+  if (other) $("wifi_other").textContent = t("wifi_other", { now: s.wifi_now, name });
   if (s.picked && s.picked.n !== pickedSeen) {
     pickedSeen = s.picked.n;
     $("store").value = s.picked.path;
@@ -200,22 +216,33 @@ function renderQuestion(s) {
   const box = $("question_text");
   box.dataset.tone = q.tone || "warn";
   box.setAttribute("role", q.tone === "bad" ? "alert" : "status");
-  const parts = [el("p", {}, withCode(pick(q.text), q.code))];
+  // What was found first, the question after it. "Warning: text": the kind in bold.
+  const parts = [];
   if (q.findings?.length) {
-    // "Warning: text": the kind in bold.
     parts.push(el("ul", {}, q.findings.map((f) => {
       const [kind, rest] = pick(f.text).split(/: (.*)/s);
       const line = rest === undefined ? [el("span", { text: kind })] : [el("strong", { text: kind + ": " }), el("span", { text: rest })];
       return el("li", {}, f.details ? [...line, el("span", { class: "code", text: f.details })] : line);
     })));
   }
+  parts.push(el("p", {}, withCode(pick(q.text), q.code)));
   box.replaceChildren(...parts);
-  // Two buttons of the same weight, no focus, no Enter: each names what it does.
-  $("answers").className = q.answers.length === 1 ? "buttons one" : "buttons";
+  const wifi = typeof q.wifi === "string";
+  $("question_wifi").hidden = !wifi;
+  if (wifi && wifiAsked !== q.id) {
+    wifiAsked = q.id;
+    $("q_wifi_name").value = q.wifi;
+    $("q_wifi_key").value = "";
+  }
+  // Buttons of the same weight, no focus, no Enter: each names what it does.
+  $("answers").className = q.answers.length === 2 ? "buttons" : "buttons one";
   $("answers").replaceChildren(...q.answers.map((answer) => {
     const button = el("button", { class: "button", type: "button", text: pick(answer.label) });
     button.disabled = sending;
-    button.addEventListener("click", () => send("answer", { question: q.id, answer: answer.value }));
+    button.addEventListener("click", () => {
+      const fields = wifi ? { wifi_name: $("q_wifi_name").value, wifi_key: $("q_wifi_key").value } : undefined;
+      send("answer", { question: q.id, answer: answer.value, fields });
+    });
     return answer.hint ? el("div", { class: "answer" }, [button, el("div", { class: "secondary", text: pick(answer.hint) })]) : button;
   }));
 }
@@ -223,6 +250,9 @@ function renderQuestion(s) {
 function renderSetupWifi(s) {
   $("setup_wifi").hidden = !s.setup_wifi;
   if (!s.setup_wifi) return;
+  const [lead, ...lines] = s.setup_wifi.lines || [];
+  $("setup_lead").textContent = pick(lead);
+  $("setup_lines").replaceChildren(...lines.map((line) => el("li", { text: pick(line) })));
   $("setup_name").textContent = s.setup_wifi.name;
   $("setup_qr").innerHTML = s.setup_wifi.qr;
   $("setup_qr").setAttribute("aria-label", `QR: ${s.setup_wifi.name}`);
@@ -234,6 +264,7 @@ function renderEnd(s) {
   $("end_text").dataset.tone = s.end.tone;
   $("end_text").setAttribute("role", s.end.tone === "bad" ? "alert" : "status");
   $("end_text").replaceChildren(...withCode(pick(s.end.text), s.end.code));
+  $("end_more").replaceChildren(...(s.end.more || []).map((line) => el("p", { text: pick(line) })));
   $("end_link").hidden = !s.end.link;
   if (s.end.link) {
     $("end_link").replaceChildren(el("a", { class: "button primary", href: s.end.link, target: "_blank", rel: "noopener", text: t("open_app") }));
@@ -254,6 +285,7 @@ function renderLog(s) {
 // fresh: a new state from the installer, whose log lines are new.
 function render(s, fresh = true) {
   state = s;
+  if (s.lang === "de" || s.lang === "en") LANG = s.lang;
   document.documentElement.lang = LANG;
   for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
   renderStart(s);
@@ -266,12 +298,23 @@ function render(s, fresh = true) {
 
 // The owner's input.
 
-$("wifi_key_show").addEventListener("click", () => {
-  const input = $("wifi_key");
-  input.type = input.type === "password" ? "text" : "password";
-  $("wifi_key_show").textContent = t(input.type === "password" ? "show" : "hide");
-  $("wifi_key_show").dataset.t = input.type === "password" ? "show" : "hide";
+for (const [field, button] of [["wifi_key", "wifi_key_show"], ["q_wifi_key", "q_wifi_key_show"]]) {
+  $(button).addEventListener("click", () => {
+    const input = $(field);
+    input.type = input.type === "password" ? "text" : "password";
+    $(button).dataset.t = input.type === "password" ? "show" : "hide";
+    $(button).textContent = t($(button).dataset.t);
+  });
+}
+
+$("wifi_name").addEventListener("input", () => render(state, false));
+
+$("help_address_go").addEventListener("click", async () => {
+  const taken = PREVIEW || (await post("help", { address: $("help_address").value }).catch(() => null));
+  $("help_address_bad").hidden = !!taken;
 });
+
+$("help_confirmed").addEventListener("click", () => send("help", { confirmed: true }));
 
 $("setup_key_show").addEventListener("click", async () => {
   const shown = $("setup_key").dataset.shown === "1";
@@ -345,18 +388,21 @@ async function poll() {
     if (!answer.ok) throw new Error(answer.status);
     const s = await answer.json();
     logFrom = s.log_next;
+    failed = 0;
     render(s);
   } catch {
-    render({ view: "gone", steps: [], log: [], end: { tone: "bad", text: t("lost") } });
-    return false;
+    failed += 1;
   }
-  return true;
+  // One missed answer is no loss; the installer may be busy for a moment.
+  $("lost").textContent = t("lost");
+  $("lost").hidden = failed < 3;
 }
 
 async function loop() {
-  while (await poll()) {
-    if (state.closed) return;
-    await new Promise((done) => setTimeout(done, 700));
+  for (;;) {
+    await poll();
+    if (state?.closed) return;
+    await new Promise((done) => setTimeout(done, failed ? 2000 : 700));
   }
 }
 

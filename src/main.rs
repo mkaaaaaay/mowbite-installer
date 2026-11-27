@@ -129,6 +129,7 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
         code: None,
         link: None,
         keep: false,
+        more: Vec::new(),
     };
     let (args, wifi) = start_args(params).map_err(|code| refused(word(code).to_owned()))?;
     cli::check_space(&args, SPACE).map_err(|error| refused(format!("{error:#}")))?;
@@ -136,18 +137,31 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
     let owner = PageOwner::new(shared.clone(), args.goal, TEXTS);
     let ended = |error: anyhow::Error| {
         owner.error(&format!("{error:#}"));
-        owner.end(false, word("frame.nothing_written"));
+        owner.end(false, word("frame.nothing_written"), &[]);
         Ok(false)
     };
     let (tron, tables) = match tron(&args, &signers, &owner) {
         Ok(found) => found,
         Err(error) => return ended(error),
     };
-    let mut wifi = wifi;
+    // The Wi-Fi typed at the start once; after a failed start the page asks for another one.
+    let mut typed = wifi;
+    let mut last = String::new();
     let mut take_wifi = || {
-        let (name, key) = wifi.take().context("no Wi-Fi")?;
-        tron.check_wifi(&name, key.expose())?;
-        Ok((name, key))
+        if let Some((name, key)) = typed.take() {
+            tron.check_wifi(&name, key.expose())?;
+            last = name.clone();
+            return Ok((name, key));
+        }
+        let mut refused: Option<String> = None;
+        loop {
+            let (name, key) = owner.wifi(&last, refused.as_deref()).context("no Wi-Fi")?;
+            last = name.clone();
+            match tron.check_wifi(&name, key.expose()) {
+                Ok(()) => return Ok((name, key)),
+                Err(error) => refused = Some(format!("{error:#}.")),
+            }
+        }
     };
     let mut prepared = match cli::prepare(&tron, &args, &signers, &owner, &owner, &mut take_wifi) {
         Ok(prepared) => prepared,
@@ -156,10 +170,17 @@ async fn page_run(shared: &Arc<Shared>, params: &Value) -> Result<bool, Note> {
             return Err(refused(format!("{error:#}")));
         }
     };
-    *owner.app.borrow_mut() = Some(format!("http://{}.local/", prepared.inputs.device_name));
-    cli::go(&tron, &mut prepared, &tables, args.goal, &owner, &owner)
-        .await
-        .or_else(ended)
+    cli::go(
+        &tron,
+        &mut prepared,
+        &tables,
+        args.goal,
+        &owner,
+        &owner,
+        &mut take_wifi,
+    )
+    .await
+    .or_else(ended)
 }
 
 async fn page_mode() -> Result<bool> {
@@ -173,6 +194,7 @@ async fn page_mode() -> Result<bool> {
                 .insert(goal_id(goal), text_of(TEXTS, before(goal)).to_owned());
         }
         v.store = default_store().display().to_string();
+        v.wifi_now = mowbite_installer::net::current_wifi();
         v.space = SPACE;
     });
     let url = server.url();

@@ -257,6 +257,15 @@ pub trait Mower {
     fn before(&self, _goal: Goal) -> &'static str {
         ""
     }
+    /// Code of the text for what is left to do by hand once a goal is reached (close the mower again); empty for
+    /// none.
+    fn after(&self, _goal: Goal) -> &'static str {
+        ""
+    }
+    /// Code of the text for how the setup Wi-Fi opens after the first start; empty for none.
+    fn setup_wifi_later(&self) -> &'static str {
+        ""
+    }
     fn space_needed(&self) -> Space;
     /// Name and key of the home Wi-Fi by the rules of this mower, checked while the owner types them.
     fn check_wifi(&self, _name: &str, _key: &str) -> Result<()> {

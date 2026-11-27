@@ -4,7 +4,7 @@
 
 use crate::run::{Goal, Step};
 use crate::secret::Secret;
-use crate::text::{Ask, Owner, back_question, word};
+use crate::text::{Ask, Back, Help, NotFound, Owner, not_found_lines, word};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
@@ -78,6 +78,9 @@ pub struct Note {
     /// Remind to keep the backup folder.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub keep: bool,
+    /// What is left to do by hand.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -105,6 +108,9 @@ pub struct Question {
     pub code: Option<String>,
     pub findings: Vec<Finding>,
     pub answers: Vec<Answer>,
+    /// The Wi-Fi name to start from when the question asks for a Wi-Fi; the page shows its fields then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -119,8 +125,10 @@ pub struct Progress {
     pub total: u64,
 }
 
+/// The mower is not found: what to check, and its setup Wi-Fi.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SetupWifi {
+    pub lines: Vec<Text>,
     pub name: String,
     pub qr: String,
 }
@@ -150,6 +158,9 @@ pub struct View {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub before: BTreeMap<&'static str, Text>,
     pub store: String,
+    /// The Wi-Fi this PC is on, when the system tells it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wifi_now: Option<String>,
     /// What the mower needs, for the free space the page shows at the backup folder.
     #[serde(skip)]
     pub space: crate::mower::Space,
@@ -182,7 +193,12 @@ pub struct View {
 #[derive(Debug, PartialEq)]
 pub enum Input {
     Start(Value),
-    Answer { question: u64, answer: String },
+    Answer {
+        question: u64,
+        answer: String,
+        /// What the owner typed into the fields of the question.
+        fields: Value,
+    },
 }
 
 #[derive(Default)]
@@ -190,6 +206,8 @@ struct Inbox {
     inputs: Vec<Input>,
     /// The key of the setup Wi-Fi, shown only when the owner asks for it.
     setup_key: Option<String>,
+    /// What the owner did while the mower is looked for, the last of it.
+    help: Option<Help>,
 }
 
 /// The state shared between the run and the server thread.
@@ -222,6 +240,10 @@ impl Shared {
 
     pub fn set_setup_key(&self, key: Option<String>) {
         self.inbox.lock().unwrap().setup_key = key;
+    }
+
+    fn take_help(&self) -> Option<Help> {
+        self.inbox.lock().unwrap().help.take()
     }
 
     /// Waits for the next input of the owner; None after `limit`.
@@ -492,7 +514,20 @@ fn answer(request: &Request, port: u16, key: &str, shared: &Shared) -> Reply {
                     shared.push(Input::Answer {
                         question,
                         answer: answer.to_owned(),
+                        fields: body["fields"].clone(),
                     });
+                }
+                // Only while the mower is looked for.
+                "help" => {
+                    let help = match body["address"].as_str().map(str::trim) {
+                        Some(address) => address.parse().ok().map(Help::Address),
+                        None => (body["confirmed"] == true).then_some(Help::Confirmed),
+                    };
+                    let looking = shared.view.lock().unwrap().setup_wifi.is_some();
+                    match help {
+                        Some(help) if looking => shared.inbox.lock().unwrap().help = Some(help),
+                        _ => return Reply::status("400 Bad Request"),
+                    }
                 }
                 "pick_folder" => {
                     let Some(picker) = shared.picker.get() else {
@@ -626,10 +661,12 @@ pub struct PageOwner {
     /// The furthest step of the list reached: those before it are done.
     reached: std::cell::Cell<usize>,
     question: std::cell::Cell<u64>,
+    /// The fields that came with the last answer.
+    fields: std::cell::RefCell<Value>,
     error: std::cell::RefCell<Option<String>>,
     declined: std::cell::Cell<bool>,
-    /// Where the page leads after the end, when the mower was found.
-    pub app: std::cell::RefCell<Option<String>>,
+    /// Where the page leads after the end.
+    app: std::cell::RefCell<Option<String>>,
 }
 
 impl PageOwner {
@@ -645,6 +682,7 @@ impl PageOwner {
             at: Default::default(),
             reached: Default::default(),
             question: Default::default(),
+            fields: Default::default(),
             error: Default::default(),
             declined: Default::default(),
             app: Default::default(),
@@ -690,6 +728,7 @@ impl PageOwner {
         text: String,
         findings: Vec<String>,
         answers: Vec<Answer>,
+        wifi: Option<String>,
     ) -> Option<&'static str> {
         let id = self.question.get() + 1;
         self.question.set(id);
@@ -708,13 +747,19 @@ impl PageOwner {
                     })
                     .collect(),
                 answers,
+                wifi,
             });
         });
         self.mark(if tone == "bad" { "warn" } else { "waiting" });
         let chosen = loop {
             match self.shared.next(None) {
-                Some(Input::Answer { question, answer }) if question == id => {
+                Some(Input::Answer {
+                    question,
+                    answer,
+                    fields,
+                }) if question == id => {
                     if let Some(value) = values.iter().find(|v| **v == answer) {
+                        *self.fields.borrow_mut() = fields;
                         break Some(*value);
                     }
                 }
@@ -725,6 +770,25 @@ impl PageOwner {
         self.shared.update(|v| v.question = None);
         self.mark("running");
         chosen
+    }
+
+    /// Asks for the Wi-Fi of the mower again, starting from name; refused says why the last one was not taken.
+    /// None when the owner ends the run instead.
+    pub fn wifi(&self, name: &str, refused: Option<&str>) -> Option<(String, Secret<String>)> {
+        let text = match refused {
+            Some(refused) => format!("{refused} {}", word("frame.wifi_again")),
+            None => word("frame.wifi_again").to_owned(),
+        };
+        let answers = vec![
+            Self::answer("stop", word("frame.answer_stop"), None),
+            Self::answer("use", word("frame.answer_use_wifi"), None),
+        ];
+        let chosen = self.ask("warn", text, vec![], answers, Some(name.to_owned()));
+        let fields = self.fields.take();
+        (chosen == Some("use")).then(|| {
+            let field = |name: &str| fields[name].as_str().unwrap_or_default().to_owned();
+            (field("wifi_name"), Secret::new(field("wifi_key")))
+        })
     }
 
     fn answer(value: &'static str, label: &str, hint: Option<&str>) -> Answer {
@@ -748,9 +812,13 @@ impl Owner for PageOwner {
         {
             self.reached.set(i);
         }
-        self.at.set(Some(step));
+        let moved = self.at.replace(Some(step)) != Some(step);
         self.shared.update(|v| {
             v.progress = None;
+            // The text of the step before says nothing about this one.
+            if moved {
+                v.detail = None;
+            }
             if step != Step::Connect {
                 v.guide = None;
             }
@@ -773,17 +841,24 @@ impl Owner for PageOwner {
             Self::answer("no", ask.no, None),
             Self::answer("yes", ask.yes, None),
         ];
-        let yes = self.ask("warn", ask.text.clone(), ask.findings.clone(), answers) == Some("yes");
+        let asked = self.ask(
+            "warn",
+            ask.text.clone(),
+            ask.findings.clone(),
+            answers,
+            None,
+        );
+        let yes = asked == Some("yes");
         self.declined.set(!yes);
         yes
     }
 
-    fn back(&self, goal: Goal) -> Option<bool> {
-        let text = self.error.borrow_mut().take().map_or_else(
-            || word(back_question(goal)).to_owned(),
-            |error| format!("{} {error}", word(back_question(goal))),
-        );
-        let answers = vec![
+    fn back(&self, why: &str, other_wifi: bool) -> Option<Back> {
+        let text = match self.error.borrow_mut().take() {
+            Some(error) => format!("{why} {error}"),
+            None => why.to_owned(),
+        };
+        let mut answers = vec![
             Self::answer(
                 "back",
                 word("frame.answer_back"),
@@ -795,7 +870,19 @@ impl Owner for PageOwner {
                 Some(word("frame.hint_write_again")),
             ),
         ];
-        self.ask("bad", text, vec![], answers).map(|a| a == "back")
+        if other_wifi {
+            answers.push(Self::answer(
+                "wifi",
+                word("frame.answer_other_wifi"),
+                Some(word("frame.hint_other_wifi")),
+            ));
+        }
+        self.ask("bad", text, vec![], answers, None)
+            .map(|a| match a {
+                "back" => Back::Vendor,
+                "wifi" => Back::OtherWifi,
+                _ => Back::Again,
+            })
     }
 
     fn again(&self) -> bool {
@@ -807,22 +894,50 @@ impl Owner for PageOwner {
             Self::answer("stop", word("frame.answer_stop"), None),
             Self::answer("again", word("frame.answer_again"), None),
         ];
-        self.ask("bad", text, vec![], answers) == Some("again")
+        self.ask("bad", text, vec![], answers, None) == Some("again")
     }
 
-    fn setup_wifi(&self, name: &str, key: &Secret<String>, _sheet: &Path) {
-        let qr = wifi_qr(name, key.expose()).unwrap_or_default();
-        self.shared.set_setup_key(Some(key.expose().clone()));
+    fn waits(&self, text: &str) {
+        self.shared.log(text, false);
+        self.shared.update(|v| v.detail = Some(text.to_owned()));
+    }
+
+    fn not_found(&self, help: Option<&NotFound>) {
+        let Some(help) = help else {
+            self.shared.set_setup_key(None);
+            self.shared.take_help();
+            self.shared.update(|v| v.setup_wifi = None);
+            return;
+        };
+        let lines = not_found_lines(help);
+        for line in &lines {
+            self.shared.log(line, false);
+        }
+        let key = help.setup_key.expose();
+        let qr = wifi_qr(help.name, key).unwrap_or_default();
+        self.shared.set_setup_key(Some(key.clone()));
         self.shared.update(|v| {
             v.setup_wifi = Some(SetupWifi {
-                name: name.to_owned(),
+                lines,
+                name: help.name.to_owned(),
                 qr,
             })
         });
     }
 
-    fn end(&self, ok: bool, text: &str) {
+    fn helped(&self) -> Option<Help> {
+        self.shared.take_help()
+    }
+
+    fn app(&self, link: &str) {
+        *self.app.borrow_mut() = Some(link.to_owned());
+    }
+
+    fn end(&self, ok: bool, text: &str, more: &[String]) {
         self.shared.log(text, !ok);
+        for line in more {
+            self.shared.log(line, false);
+        }
         self.mark(if ok {
             "ok"
         } else if self.declined.get() {
@@ -859,6 +974,7 @@ impl Owner for PageOwner {
                 code: None,
                 link,
                 keep: self.goal != Goal::Back,
+                more: more.to_vec(),
             });
         });
     }
@@ -977,7 +1093,8 @@ mod tests {
             shared.next(Some(Duration::ZERO)),
             Some(Input::Answer {
                 question: 1,
-                answer: "yes".into()
+                answer: "yes".into(),
+                fields: Value::Null,
             })
         );
     }
@@ -1085,6 +1202,64 @@ mod tests {
         assert_eq!(
             ask("install", std::path::Path::new("relative")).status,
             "404 Not Found"
+        );
+    }
+
+    #[test]
+    fn help_only_while_the_mower_is_looked_for() {
+        let shared = Arc::new(Shared::default());
+        let post = |body: &str| {
+            let help = request("POST", &format!("/{KEY}/help"), HOST, Some(PAGE), body);
+            status(&help, &shared)
+        };
+        assert_eq!(post(r#"{"address":"192.168.1.5"}"#), "400 Bad Request");
+        let owner = PageOwner::new(shared.clone(), Goal::Install, &[]);
+        let key = Secret::new("k3y".to_owned());
+        owner.not_found(Some(&NotFound {
+            wifi: "Heim",
+            name: "mowbite-ab12",
+            setup_key: &key,
+            sheet: Path::new("sheet"),
+        }));
+        assert_eq!(post(r#"{"address":"router"}"#), "400 Bad Request");
+        assert_eq!(post(r#"{"address":" 192.168.1.5 "}"#), "200 OK");
+        assert_eq!(
+            owner.helped(),
+            Some(Help::Address("192.168.1.5".parse().unwrap()))
+        );
+        assert_eq!(owner.helped(), None);
+        // Found: the card goes, and what the owner did meanwhile with it.
+        assert_eq!(post(r#"{"confirmed":true}"#), "200 OK");
+        owner.not_found(None);
+        assert_eq!(owner.helped(), None);
+        assert!(shared.view.lock().unwrap().setup_wifi.is_none());
+        assert!(!String::from_utf8(shared.state(0)).unwrap().contains("k3y"));
+    }
+
+    #[test]
+    fn another_wifi_comes_with_its_answer() {
+        let shared = Arc::new(Shared::default());
+        let owner = PageOwner::new(shared.clone(), Goal::Install, &[]);
+        shared.push(Input::Answer {
+            question: 1,
+            answer: "use".into(),
+            fields: serde_json::json!({"wifi_name": "Gast", "wifi_key": "anderes123"}),
+        });
+        let (name, key) = owner.wifi("Heim", None).unwrap();
+        assert_eq!(
+            (name.as_str(), key.expose().as_str()),
+            ("Gast", "anderes123")
+        );
+        shared.push(Input::Answer {
+            question: 2,
+            answer: "stop".into(),
+            fields: Value::Null,
+        });
+        assert!(owner.wifi("Gast", Some("refused")).is_none());
+        assert!(
+            !String::from_utf8(shared.state(0))
+                .unwrap()
+                .contains("anderes123")
         );
     }
 
