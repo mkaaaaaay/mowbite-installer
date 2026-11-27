@@ -67,9 +67,10 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 | **One write** | MowBite OS goes into the system partition only. It is read back and compared before the mower restarts. The boot area is never written. |
 | **Signed files** | Downloads the newest release from [mowbite-releases](https://github.com/mkaaaaaay/mowbite-releases) and checks every file against keys built into the installer. |
 | **First start without the internet** | The mower joins your Wi-Fi and installs the OS, the planner and the app from what the installer gave it. |
-| **A dry run** | `check` makes the backup and runs every check, then ends without writing anything to the mower. |
+| **A dry run** | Back up and check only (`check`) makes the backup and runs every check, then ends without writing anything to the mower. |
 | **Goes on after a stop** | Start it again with the same folders and it goes on where it was. A backup that was started is resumed, never replaced. |
 | **The way back** | `back` writes the vendor system from your backup, after checking that the backup belongs to this mower. |
+| **In the browser** | Started without arguments it shows its steps on a page in your browser. Commands in a terminal work as well. |
 
 ## What you need
 
@@ -91,32 +92,44 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 ![Connect, back up, check, write, first start](docs/install.svg)
 
 1. **Download** the installer for your PC from the
-   [releases](https://github.com/mkaaaaaay/mowbite-installer/releases) of this repo and open a terminal in its folder.
+   [releases](https://github.com/mkaaaaaay/mowbite-installer/releases) of this repo.
    On Windows keep `mowbite-usb-driver.exe` and `libwdi.dll` next to `mowbite-installer.exe`.
-2. **Try it without writing**, if you like. `check` makes the backup and runs every check, then ends:
-
-   ```
-   mowbite-installer check <backup folder>
-   ```
-
-3. **Install.** With the same backup folder it goes on from that backup:
-
-   ```
-   mowbite-installer install <backup folder> [--work <folder>]
-   ```
-
-4. **Connect the Tron** when the installer asks for it. It asks for your Wi-Fi first (not on `check`).
+2. **Start it** without arguments. It opens its page in your browser, in English or German as your browser is set.
+   The page runs on your own PC only and ends with the installer.
+3. **Choose what it should do** and the backup folder: install MowBite OS, back up and check only (writes nothing to
+   the mower, installing later goes on from the same backup), or write the vendor system back. For an installation
+   it also asks for the name and key of your Wi-Fi: the key goes only to the mower.
+4. **Connect the Tron** when the page asks for it.
    1. Battery in, Tron off and not on its charging station.
    2. Take off the upper camera unit. A USB-C socket sits behind it.
    3. Connect the cable from this socket to the PC.
    4. Hold button B and switch the Tron on. Let go when the installer sees the Tron.
-5. **Let it run.** From there it runs by itself and keeps the PC awake. The backup alone takes about 30 to 55
-   minutes, plan for one to two hours in all. If it stops, start it again with the same folders.
-6. **Open the app.** Map, RTK and the safety measurement follow in the setup of the MowBite app. Until then the
-   mower only takes remote control and the blade stays locked.
+5. **Let it run.** From there it runs by itself and keeps the PC awake. Before it writes, the page shows what the
+   checks found and asks you. The backup alone takes about 30 to 55 minutes, plan for one to two hours in all. If it
+   stops, start it again with the same folder.
+6. **Open the app** with the button at the end. Map, RTK and the safety measurement follow in the setup of the
+   MowBite app. Until then the mower only takes remote control and the blade stays locked.
 
-Each command downloads the release files into `<backup folder>/release`. To use files you already have, give their
-folder after the backup folder.
+![The installer page: choose a goal, backup, the question before writing, done](docs/page.webp)
+
+<details>
+<summary><b>In a terminal instead</b></summary>
+
+With a command the installer runs in text mode, with the same steps and questions:
+
+```
+mowbite-installer check <backup folder>
+mowbite-installer install <backup folder> [--work <folder>]
+mowbite-installer back <backup folder>
+```
+
+`check` makes the backup and runs every check, then ends. `install` with the same backup folder goes on from that
+backup.
+
+</details>
+
+The installer downloads the release files into `<backup folder>/release`. To use files you already have, give their
+folder after the backup folder in text mode.
 
 On Windows the installer sets up the WinUSB driver once, if the Tron has none yet. Windows shows a prompt for
 permission. The step uses [libwdi](https://github.com/pbatard/libwdi) like Zadig does.
@@ -167,13 +180,15 @@ A robot mower has a turning blade and drives by itself. Read
 
 ## Back to the vendor system
 
+Choose "Write the vendor system back" on the page, or in a terminal:
+
 ```
 mowbite-installer back <backup folder>
 ```
 
-`back` writes the system partition from your backup, after checking that the backup belongs to this mower. Connect
+It writes the system partition from your backup, after checking that the backup belongs to this mower. Connect
 the Tron as for the installation. Writing the vendor system back has been tested on Linux. Should it fail on Windows,
-run `back` from a Linux PC.
+write it back from a Linux PC.
 
 ## The MowBite project
 
