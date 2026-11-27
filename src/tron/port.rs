@@ -83,7 +83,7 @@ fn mode(info: &nusb::DeviceInfo) -> UsbMode {
     }
 }
 
-/// Windows opens the Tron only through WinUSB; Linux needs no driver.
+/// Windows opens the Tron only through WinUSB.
 #[cfg(windows)]
 fn needs_driver(info: &nusb::DeviceInfo) -> bool {
     !info
@@ -91,7 +91,13 @@ fn needs_driver(info: &nusb::DeviceInfo) -> bool {
         .is_some_and(|d| d.eq_ignore_ascii_case("winusb"))
 }
 
-#[cfg(not(windows))]
+/// Linux opens it only when this user may use its device file (the udev rule).
+#[cfg(target_os = "linux")]
+fn needs_driver(info: &nusb::DeviceInfo) -> bool {
+    !super::usb_driver::may_use(info.busnum(), info.device_address())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn needs_driver(_info: &nusb::DeviceInfo) -> bool {
     false
 }

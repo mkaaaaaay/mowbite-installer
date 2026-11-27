@@ -221,7 +221,18 @@ impl<P: Port> Mower for Tron<P> {
     }
 
     async fn install_usb_driver(&self) -> Result<()> {
-        super::usb_driver::install().await
+        super::usb_driver::install().await?;
+        // Asked again only when it changed something: else the owner would be asked in a loop.
+        ensure!(
+            !self.port.find().await?.is_some_and(|f| f.needs_driver),
+            "{}: the Tron is still not usable",
+            if cfg!(windows) {
+                super::usb_driver::FAILED
+            } else {
+                super::usb_driver::ACCESS_FAILED
+            }
+        );
+        Ok(())
     }
 
     async fn open(&self, found: &Found, ctx: &mut Ctx<'_>) -> Result<(Self::Device, Identity)> {

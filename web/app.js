@@ -45,7 +45,7 @@ const T = {
     "Keep the backup folder, it is the way back, and do not share it."],
   open_app: ["MowBite öffnen", "Open MowBite"],
   waiting: ["Wartet auf deine Antwort", "Waits for your answer"],
-  of: ["{done} von {total} GB", "{done} of {total} GB"],
+  share: ["{pct} %", "{pct}%"],
   step_connect: ["Verbinden", "Connect"],
   step_backup: ["Sichern", "Back up"],
   step_check: ["Prüfen", "Check"],
@@ -81,7 +81,6 @@ const CROSS = '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>';
 const BANG = '<svg viewBox="0 0 24 24"><path d="M12 6v8M12 18v.5"/></svg>';
 const DASH = '<svg viewBox="0 0 24 24"><path d="M7 12h10"/></svg>';
 const MARKS = { ok: CHECK, failed: CROSS, warn: BANG, declined: DASH };
-const gb = (bytes) => (bytes / 1e9).toLocaleString(LANG, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 let state = null;
 let goal = null;
@@ -185,9 +184,7 @@ function renderRun(s) {
         fill.style.width = `${share}%`;
         text.append(el("div", { class: "bar", role: "progressbar", "aria-valuenow": Math.floor(share),
           "aria-valuemin": "0", "aria-valuemax": "100" }, [fill]));
-        if (s.progress.total > 0) {
-          text.append(el("div", { class: "bar_text", text: t("of", { done: gb(s.progress.done), total: gb(s.progress.total) }) }));
-        }
+        if (s.progress.total > 0) text.append(el("div", { class: "bar_text", text: t("share", { pct: Math.floor(share) }) }));
       }
     }
     return el("li", { "data-state": step.state }, [el("span", { class: "mark", html: MARKS[step.state] || "" }), text]);

@@ -304,6 +304,23 @@ const FRAME: &[(&str, &str, &str)] = &[
          Windows asks for permission.",
     ),
     (
+        "frame.usb_access",
+        "Damit der Installer die Tron über USB erreicht, legt er eine Regel für Linux an. Dafür fragt das System \
+         einmal nach deinem Passwort.",
+        "So that the installer reaches the Tron over USB, it sets up a rule for Linux. The system asks once for your \
+         password for it.",
+    ),
+    (
+        "frame.usb_access_ask",
+        "Die Regel jetzt anlegen?",
+        "Set up the rule now?",
+    ),
+    (
+        "frame.answer_usb_access",
+        "Regel anlegen",
+        "Set up the rule",
+    ),
+    (
         "frame.usb_driver_ask",
         "Den USB-Treiber jetzt einrichten?",
         "Set up the USB driver now?",
@@ -488,6 +505,11 @@ const FRAME: &[(&str, &str, &str)] = &[
          room, for example an external disk.",
     ),
     (
+        "frame.backup_size",
+        "Die Sicherung ist fertig und belegt {gb} GB.",
+        "The backup is done and takes {gb} GB.",
+    ),
+    (
         "frame.pick_store",
         "Sicherungsordner wählen",
         "Choose the backup folder",
@@ -626,6 +648,7 @@ pub async fn run<M: Mower, F: FirstStart>(
             owner.say(word("frame.stopped"));
             return leave(&mut driver, owner);
         }
+        let was = driver.run.step;
         let result = {
             let mut ctx = Ctx {
                 store,
@@ -639,6 +662,10 @@ pub async fn run<M: Mower, F: FirstStart>(
             owner.at(driver.run.step);
             driver.step(&mut ctx, base, inputs).await
         };
+        if was == Step::Backup && driver.run.step != Step::Backup {
+            let gb = crate::space::used_bytes(store.root()) as f64 / 1e9;
+            owner.say(&word("frame.backup_size").replace("{gb}", &format!("{gb:.1}")));
+        }
         let next = match result {
             Ok(next) => next,
             Err(error) => {
@@ -672,14 +699,24 @@ pub async fn run<M: Mower, F: FirstStart>(
                 tokio::time::sleep(LOOK).await;
             }
             Next::UsbDriver => {
-                log.info(
-                    "usb_driver",
-                    "asking to set up WinUSB with libwdi (as Zadig)",
-                );
+                log.info("usb_driver", "asking to set up USB access");
+                let [what, ask, yes] = if cfg!(windows) {
+                    [
+                        "frame.usb_driver",
+                        "frame.usb_driver_ask",
+                        "frame.answer_usb_driver",
+                    ]
+                } else {
+                    [
+                        "frame.usb_access",
+                        "frame.usb_access_ask",
+                        "frame.answer_usb_access",
+                    ]
+                };
                 if !owner.agree(&Ask {
-                    findings: vec![word("frame.usb_driver").to_owned()],
-                    text: word("frame.usb_driver_ask").to_owned(),
-                    yes: word("frame.answer_usb_driver"),
+                    findings: vec![word(what).to_owned()],
+                    text: word(ask).to_owned(),
+                    yes: word(yes),
                     no: word("frame.answer_stop"),
                 }) {
                     return leave(&mut driver, owner);
@@ -1013,6 +1050,8 @@ mod tests {
         let said = owner.said.borrow().join("\n");
         assert!(said.contains(&word("frame.setup_hint")[..20]), "{said}");
         assert!(said.contains(crate::cli::SHEET));
+        let size = word("frame.backup_size").split('{').next().unwrap();
+        assert_eq!(said.matches(size).count(), 1, "{said}");
     }
 
     #[tokio::test(start_paused = true)]

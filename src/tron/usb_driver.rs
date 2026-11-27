@@ -1,5 +1,6 @@
 //! WinUSB for the Tron on Windows: mowbite-usb-driver.exe next to the installer installs it with libwdi (LGPL-3, a
 //! program of its own with its DLL, so the installer never links it). Windows asks the owner for permission (UAC).
+//! On Linux a udev rule lets the owner at the desk use the Tron; pkexec asks for the password for one fixed script.
 
 use anyhow::{Result, bail};
 
@@ -30,9 +31,61 @@ pub async fn install() -> Result<()> {
     tokio::task::spawn_blocking(run).await?
 }
 
-#[cfg(not(windows))]
+pub const ACCESS_DECLINED: &str = "tron.usb_access_declined";
+pub const ACCESS_FAILED: &str = "tron.usb_access_failed";
+pub const ACCESS_MANUAL: &str = "tron.usb_access_manual";
+/// The rule: read and write for the user at the desk (uaccess), for the Tron in every USB mode.
+const RULE: &str = r#"SUBSYSTEM=="usb", ATTR{idVendor}=="2207", ATTR{idProduct}=="350b", MODE="0660", TAG+="uaccess""#;
+const RULE_FILE: &str = "/etc/udev/rules.d/70-mowbite-tron.rules";
+
+/// The only thing run as root: write the rule, load it and apply it to the Tron already on USB. Fixed text, nothing
+/// from outside goes in.
+fn rule_script() -> String {
+    format!(
+        "umask 022 && printf '%s\\n' '{RULE}' > {RULE_FILE} && udevadm control --reload-rules && \
+         udevadm trigger --subsystem-match=usb --attr-match=idVendor=2207 && udevadm settle"
+    )
+}
+
+/// Whether this user may read and write the device file of the Tron at bus/address.
+#[cfg(target_os = "linux")]
+pub fn may_use(bus: u8, address: u8) -> bool {
+    let path = std::ffi::CString::new(format!("/dev/bus/usb/{bus:03}/{address:03}"))
+        .expect("no NUL in a formatted path");
+    // SAFETY: path is a NUL-terminated string; access only reads it.
+    unsafe { libc::access(path.as_ptr(), libc::R_OK | libc::W_OK) == 0 }
+}
+
+#[cfg(target_os = "linux")]
 pub async fn install() -> Result<()> {
-    bail!("{MISSING}: only Windows needs a USB driver")
+    tokio::task::spawn_blocking(|| {
+        let ran = std::process::Command::new("pkexec")
+            .args(["/bin/sh", "-c", &rule_script()])
+            .status();
+        pkexec_outcome(ran.map(|s| s.code()))
+    })
+    .await?
+}
+
+/// What pkexec's end means: 126 and 127 are its own for a password not given or not accepted.
+fn pkexec_outcome(ran: std::io::Result<Option<i32>>) -> Result<()> {
+    match ran {
+        Ok(Some(0)) => Ok(()),
+        Ok(Some(126 | 127)) => bail!("{ACCESS_DECLINED}: pkexec"),
+        Ok(code) => bail!("{ACCESS_FAILED}: pkexec ended with {code:?}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "{ACCESS_MANUAL}: sudo sh -c \"{}\"",
+                rule_script().replace('"', "\\\"")
+            )
+        }
+        Err(e) => bail!("{ACCESS_FAILED}: {e}"),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub async fn install() -> Result<()> {
+    bail!("{MISSING}: this system needs no USB driver")
 }
 
 /// Starts the helper elevated and waits for it; it writes one line on what it did into a file of ours.
@@ -95,6 +148,39 @@ fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rule_script_writes_one_fixed_rule() {
+        let script = rule_script();
+        assert!(
+            script.starts_with(
+                "umask 022 && printf '%s\\n' 'SUBSYSTEM==\"usb\", ATTR{idVendor}==\"2207\""
+            ) && script.contains("> /etc/udev/rules.d/70-mowbite-tron.rules && ")
+                && script.ends_with("--attr-match=idVendor=2207 && udevadm settle"),
+            "{script}"
+        );
+        // The rule sits in single quotes: none inside it.
+        assert!(!RULE.contains('\''));
+    }
+
+    #[test]
+    fn exit_codes_of_pkexec() {
+        assert!(pkexec_outcome(Ok(Some(0))).is_ok());
+        for code in [126, 127] {
+            let e = pkexec_outcome(Ok(Some(code))).unwrap_err().to_string();
+            assert!(e.starts_with(ACCESS_DECLINED), "{e}");
+        }
+        let e = pkexec_outcome(Ok(Some(1))).unwrap_err().to_string();
+        assert!(e.starts_with(ACCESS_FAILED), "{e}");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let e = pkexec_outcome(Err(missing)).unwrap_err().to_string();
+        assert!(
+            e.starts_with(ACCESS_MANUAL)
+                && e.contains("sudo sh -c \"umask 022")
+                && e.contains("\\\"usb\\\""),
+            "{e}"
+        );
+    }
 
     #[test]
     fn exit_codes_of_the_helper() {

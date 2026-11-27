@@ -27,6 +27,25 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "The USB driver for the Tron could not be set up. Connect the Tron again and start the installer again.",
     ),
     (
+        "tron.usb_access_declined",
+        "Ohne dein Passwort legt der Installer die USB-Regel nicht an. Beim nächsten Start erneut fragen lassen.",
+        "Without your password the installer sets up no USB rule. Start it again to be asked again.",
+    ),
+    (
+        "tron.usb_access_failed",
+        "Der Installer erreicht die Tron über USB noch nicht. Das USB-Kabel ab- und wieder anstecken und den \
+         Installer erneut starten. Hilft das nicht: direkt an diesem Rechner angemeldet sein, nicht über das Netz.",
+        "The installer cannot reach the Tron over USB yet. Unplug the USB cable, plug it in again and start the \
+         installer again. If that does not help: be logged in at this computer itself, not over the network.",
+    ),
+    (
+        "tron.usb_access_manual",
+        "Für den USB-Zugriff auf die Tron fehlt eine Regel, und pkexec ist nicht da. Bitte diesen Befehl in einem \
+         Terminal ausführen und den Installer erneut starten:",
+        "A rule for USB access to the Tron is missing and pkexec is not there. Please run this command in a terminal \
+         and start the installer again:",
+    ),
+    (
         "tron.usb_driver_missing",
         "Das Hilfsprogramm für den USB-Treiber fehlt. Den Installer vollständig aus dem ZIP-Archiv entpacken.",
         "The helper for the USB driver is missing. Unpack the whole ZIP archive of the installer.",

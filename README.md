@@ -80,8 +80,8 @@ the [MowBite Discord](https://discord.gg/VpPFRx9Ce4).
 - A USB-C data cable.
 - The Tron with its battery at least half full, off its charging station.
 - The name and key of your Wi-Fi.
-- On Linux, access to the Tron on USB without root, for example with this udev rule in
-  `/etc/udev/rules.d/70-mowbite-tron.rules`:
+- On Linux the installer sets up USB access to the Tron itself and asks once for your password (pkexec). Without
+  pkexec, put this udev rule in `/etc/udev/rules.d/70-mowbite-tron.rules`:
 
   ```
   SUBSYSTEM=="usb", ATTR{idVendor}=="2207", ATTR{idProduct}=="350b", MODE="0660", TAG+="uaccess"
