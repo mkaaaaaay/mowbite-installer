@@ -228,8 +228,8 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     ),
     (
         "tron.check_system",
-        "Der Installer prüft das gesicherte System der Tron. Das dauert ein paar Minuten, ohne Anzeige.",
-        "The installer checks the saved system of the Tron. This takes a few minutes, without a display.",
+        "Der Installer prüft das gesicherte System der Tron. Das dauert etwa 10 Minuten, ohne Fortschrittsbalken.",
+        "The installer checks the saved system of the Tron. This takes about 10 minutes, without a progress bar.",
     ),
     (
         "tron.check_backup",

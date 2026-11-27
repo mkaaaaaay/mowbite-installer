@@ -9,7 +9,7 @@ use crate::run::Goal;
 use crate::secret::Secret;
 use crate::sign::Signers;
 use crate::store::Store;
-use crate::text::{self, Bar, Terminal};
+use crate::text::{self, Bar, Owner, Terminal};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
 use sha2::Digest;
@@ -244,43 +244,39 @@ fn ask_wifi<M: Mower>(mower: &M) -> Result<(String, Secret<String>)> {
     }
 }
 
-/// Reads everything a goal needs, then runs it in the terminal. Ok(true) when the goal was reached.
-pub async fn run<M: Mower>(
+/// What a run needs besides the mower: read and checked before anything touches the mower.
+pub struct Prepared {
+    pub store: Store,
+    pub work: WorkDir,
+    pub base: BaseImage,
+    pub inputs: Inputs,
+}
+
+/// Opens the backup folder, checks space and the release, and takes the Wi-Fi of the owner (install only).
+pub fn prepare<M: Mower>(
     mower: &M,
     args: &Args,
     signers: &Signers,
-    tables: &Tables,
-) -> Result<bool> {
-    // Started without any terminal (a double click): stop at once, not after minutes at the first question.
-    ensure!(
-        std::io::stdin().is_terminal() || std::io::stdout().is_terminal(),
-        "the installer needs a terminal: it asks there for your Wi-Fi and what to do next. Open a terminal and \
-         start it there.\n{USAGE}"
-    );
-    let mut store = Store::open(&args.store)?;
+    owner: &dyn Owner,
+    progress: &dyn Progress,
+    wifi: &mut dyn FnMut() -> Result<(String, Secret<String>)>,
+) -> Result<Prepared> {
+    let store = Store::open(&args.store)?;
     crate::store::private_dir(&args.work)?;
-    if !mower.before().is_empty() {
-        println!("{}", text::text_of(mower.texts(), mower.before()));
-    }
     let space = mower.space_needed();
     let work_bytes = match args.goal {
         Goal::Install => space.work_bytes,
-        Goal::Check => 0,
-        Goal::Back => 0,
+        Goal::Check | Goal::Back => 0,
     };
     if args.goal != Goal::Back {
         crate::space::check(&args.store, space.backup_bytes, &args.work, work_bytes)?;
     }
-    println!(
-        "The backup in {} holds the whole flash of the mower with its keys and Wi-Fi: keep it to yourself, \
-         do not share it.",
-        args.store.display()
+    owner.say(
+        &text::word("frame.keep_backup").replace("{folder}", &args.store.display().to_string()),
     );
     let (base, inputs) = match args.goal {
         Goal::Install | Goal::Check => {
-            println!("Checking the base system in the release folder, this takes a few minutes.");
-            let (base, base_number) =
-                base(&args.release, signers, mower.id(), &Bar::new(mower.texts()))?;
+            let (base, base_number) = base(&args.release, signers, mower.id(), progress)?;
             let bundles = bundles(&args.release, signers)?;
             if let Some(os) = bundles.first() {
                 if let Some(needs) = os_needs_base(&os.path)? {
@@ -297,13 +293,12 @@ pub async fn run<M: Mower>(
                 }
             } else {
                 let setup = setup(&args.store)?;
-                println!(
-                    "The mower will be called {}. Should it not find your Wi-Fi, it opens its own; its name and \
-                     key are in {}.",
-                    setup.name,
-                    args.store.join(SHEET).display()
+                owner.say(
+                    &text::word("frame.mower_name")
+                        .replace("{name}", &setup.name)
+                        .replace("{sheet}", &args.store.join(SHEET).display().to_string()),
                 );
-                let (wifi_name, wifi_key) = ask_wifi(mower)?;
+                let (wifi_name, wifi_key) = wifi()?;
                 Inputs {
                     wifi_name,
                     wifi_key,
@@ -326,26 +321,66 @@ pub async fn run<M: Mower>(
             Inputs::none(),
         ),
     };
-    let work = WorkDir {
-        path: args.work.clone(),
-    };
+    Ok(Prepared {
+        store,
+        work: WorkDir {
+            path: args.work.clone(),
+        },
+        base,
+        inputs,
+    })
+}
+
+/// Runs a prepared goal with this owner. Ok(true) when the goal was reached.
+pub async fn go<M: Mower>(
+    mower: &M,
+    prepared: &mut Prepared,
+    tables: &Tables,
+    goal: Goal,
+    owner: &dyn Owner,
+    progress: &dyn Progress,
+) -> Result<bool> {
     let first = Confirm::new(
-        &inputs.device_name,
-        Secret::new(inputs.install_id.expose().clone()),
+        &prepared.inputs.device_name,
+        Secret::new(prepared.inputs.install_id.expose().clone()),
     );
     text::run(
         mower,
-        &mut store,
-        &work,
+        &mut prepared.store,
+        &prepared.work,
         tables,
-        &base,
-        &inputs,
-        args.goal,
+        &prepared.base,
+        &prepared.inputs,
+        goal,
         &first,
-        &Terminal,
+        owner,
+        progress,
         &Default::default(),
     )
     .await
+}
+
+/// Reads everything a goal needs, then runs it in the terminal. Ok(true) when the goal was reached.
+pub async fn run<M: Mower>(
+    mower: &M,
+    args: &Args,
+    signers: &Signers,
+    tables: &Tables,
+) -> Result<bool> {
+    // Started without any terminal (a double click): stop at once, not after minutes at the first question.
+    ensure!(
+        std::io::stdin().is_terminal() || std::io::stdout().is_terminal(),
+        "the installer needs a terminal: it asks there for your Wi-Fi and what to do next. Open a terminal and \
+         start it there.\n{USAGE}"
+    );
+    if !mower.before().is_empty() {
+        println!("{}", text::text_of(mower.texts(), mower.before()));
+    }
+    let bar = Bar::new(mower.texts());
+    let mut prepared = prepare(mower, args, signers, &Terminal, &bar, &mut || {
+        ask_wifi(mower)
+    })?;
+    go(mower, &mut prepared, tables, args.goal, &Terminal, &bar).await
 }
 
 #[cfg(test)]

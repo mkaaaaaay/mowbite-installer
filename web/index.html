@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>MowBite Installer</title>
+  <link rel="icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="preview" id="preview" hidden></nav>
+  <main>
+    <header>
+      <img src="icon-192.png" alt="">
+      <h1>MowBite Installer</h1>
+    </header>
+
+    <section class="card" id="start" hidden>
+      <h2 data-t="start_title"></h2>
+      <p class="note" id="before"></p>
+      <div class="choices" role="radiogroup" id="goals"></div>
+      <label class="field"><span data-t="store"></span>
+        <input id="store" type="text" autocomplete="off" spellcheck="false">
+        <span class="secondary" id="store_hint"></span>
+      </label>
+      <div id="wifi_form" hidden>
+        <label class="field"><span data-t="wifi_name"></span>
+          <input id="wifi_name" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field"><span data-t="wifi_key"></span>
+          <span class="row">
+            <input id="wifi_key" type="password" autocomplete="off" spellcheck="false">
+            <button class="button small" type="button" id="wifi_key_show" data-t="show"></button>
+          </span>
+          <span class="secondary" data-t="wifi_key_hint"></span>
+        </label>
+        <p class="secondary" data-t="wifi_needed"></p>
+      </div>
+      <p class="note" data-tone="bad" role="alert" id="start_error" hidden></p>
+      <div class="buttons one"><button class="button" type="button" id="go" disabled></button></div>
+    </section>
+
+    <section class="card" id="guide_card" hidden>
+      <h2 data-t="guide_title"></h2>
+      <ol class="guide" id="guide"></ol>
+    </section>
+
+    <section class="card" id="question" hidden>
+      <div class="note" data-tone="warn" id="question_text"></div>
+      <div class="buttons" id="answers"></div>
+    </section>
+
+    <section class="card" id="setup_wifi" hidden>
+      <h2 data-t="setup_wifi_title"></h2>
+      <p class="secondary" data-t="setup_wifi_text"></p>
+      <div class="wifi">
+        <dl>
+          <dt data-t="wifi_name"></dt><dd id="setup_name"></dd>
+          <dt data-t="wifi_key"></dt><dd id="setup_key">••••••••</dd>
+          <dd class="plain"><button class="button small" type="button" id="setup_key_show" data-t="show"></button></dd>
+        </dl>
+        <div class="qr" id="setup_qr" role="img"></div>
+      </div>
+    </section>
+
+    <section class="card" id="end" hidden>
+      <p class="note" id="end_text"></p>
+      <div class="buttons one" id="end_link" hidden></div>
+      <p class="secondary" id="end_keep" data-t="end_keep" hidden></p>
+      <p class="secondary" data-t="end_close"></p>
+    </section>
+
+    <section class="card" id="run" hidden>
+      <h2 id="run_title"></h2>
+      <ol class="steps" id="steps"></ol>
+    </section>
+
+    <section class="card" id="log_card" hidden>
+      <details class="log" id="log_box">
+        <summary><span data-t="log"></span>
+          <button class="button small" type="button" id="log_copy" data-t="copy"></button></summary>
+        <pre id="log"></pre>
+      </details>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -16,3 +16,4 @@ pub mod store;
 mod testing;
 pub mod text;
 pub mod tron;
+pub mod web;
