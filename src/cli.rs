@@ -72,6 +72,39 @@ pub fn parse(args: &[String]) -> Result<Args> {
     })
 }
 
+/// The name of a new backup folder.
+pub fn store_name() -> &'static str {
+    if text::german() {
+        "MowBite-Sicherung"
+    } else {
+        "MowBite-Backup"
+    }
+}
+
+/// Whether dir can be the backup folder: missing, empty or made by the installer. The installer limits its rights to
+/// the owner, so a folder of other files (Documents, a USB stick) is never taken.
+pub fn store_fits(dir: &Path) -> bool {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
+    };
+    let mut entries = entries.flatten().peekable();
+    entries.peek().is_none()
+        || entries.any(|e| {
+            [crate::store::SUMS, DOWNLOADED, "work", SHEET]
+                .contains(&&*e.file_name().to_string_lossy())
+        })
+}
+
+/// The backup folder for a folder the owner picked: the folder itself when it fits, else a new one inside it.
+pub fn store_in(picked: &Path) -> PathBuf {
+    if store_fits(picked) {
+        picked.to_path_buf()
+    } else {
+        picked.join(store_name())
+    }
+}
+
 /// name in the release folder; the name may come from a file not yet verified, so only a plain one is taken.
 pub fn release_file(release: &Path, name: &str) -> Result<PathBuf> {
     ensure!(
@@ -278,13 +311,13 @@ pub fn prepare<M: Mower>(
         Goal::Install | Goal::Check => {
             let (base, base_number) = base(&args.release, signers, mower.id(), progress)?;
             let bundles = bundles(&args.release, signers)?;
-            if let Some(os) = bundles.first() {
-                if let Some(needs) = os_needs_base(&os.path)? {
-                    ensure!(
-                        base_number >= needs,
-                        "the OS bundle needs base system {needs}, the release folder has {base_number}"
-                    );
-                }
+            if let Some(os) = bundles.first()
+                && let Some(needs) = os_needs_base(&os.path)?
+            {
+                ensure!(
+                    base_number >= needs,
+                    "the OS bundle needs base system {needs}, the release folder has {base_number}"
+                );
             }
             let inputs = if args.goal == Goal::Check {
                 Inputs {
@@ -373,8 +406,9 @@ pub async fn run<M: Mower>(
         "the installer needs a terminal: it asks there for your Wi-Fi and what to do next. Open a terminal and \
          start it there.\n{USAGE}"
     );
-    if !mower.before().is_empty() {
-        println!("{}", text::text_of(mower.texts(), mower.before()));
+    let before = mower.before(args.goal);
+    if !before.is_empty() {
+        println!("{}", text::text_of(mower.texts(), before));
     }
     let bar = Bar::new(mower.texts());
     let mut prepared = prepare(mower, args, signers, &Terminal, &bar, &mut || {
@@ -389,6 +423,31 @@ mod tests {
 
     fn args(list: &[&str]) -> Result<Args> {
         parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_backup_folder_is_new_empty_or_made_by_the_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| dir.path().join(name);
+        assert!(store_fits(&at("new")));
+        std::fs::create_dir(at("empty")).unwrap();
+        assert!(store_fits(&at("empty")));
+        for ours in [crate::store::SUMS, DOWNLOADED, "work", SHEET] {
+            let folder = at(&format!("with-{ours}"));
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(folder.join("other.txt"), "").unwrap();
+            std::fs::write(folder.join(ours), "").unwrap();
+            assert!(store_fits(&folder), "{ours}");
+            assert_eq!(store_in(&folder), folder);
+        }
+        std::fs::create_dir(at("documents")).unwrap();
+        std::fs::write(at("documents").join("letter.txt"), "").unwrap();
+        assert!(!store_fits(&at("documents")));
+        assert_eq!(
+            store_in(&at("documents")),
+            at("documents").join(store_name())
+        );
+        assert!(!store_fits(&at("documents").join("letter.txt")));
     }
 
     #[test]

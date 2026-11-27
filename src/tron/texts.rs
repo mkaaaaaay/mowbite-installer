@@ -206,18 +206,25 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "The installer does not know this vendor software version. It can go on anyway.",
     ),
     (
-        "tron.before",
-        "Vorher: Herstellersoftware 1.3.32 oder 1.3.33 auf der Tron, Akku mindestens halb voll, etwa 41 GB frei für \
-         diesen Ordner. Der Installer schreibt nie in die Bereiche, aus denen die Tron startet. Er sichert zuerst den \
-         ganzen Speicher, die Startbereiche und den Systembereich doppelt; das Zurückschreiben des Herstellersystems \
-         (back) ist unter Linux erprobt. Schlimmster Fall: der Systembereich ist nur zum Teil geschrieben. Dann den \
-         Installer mit diesem Sicherungsordner neu starten, er bietet erneut schreiben oder zurück an; klappt das \
-         unter Windows nicht, back von einem Linux-PC.",
-        "Before you start: vendor software 1.3.32 or 1.3.33 on the Tron, its battery at least half full, about 41 GB \
-         free for this folder. The installer never writes the areas the Tron starts from. It first saves the whole \
-         flash, the start areas and the system area twice; writing the vendor system back (back) was tested on \
-         Linux. Worst case: the system area is written only in part. Then start the installer again with this backup \
-         folder, it offers to write again or to go back; should that fail on Windows, run back from a Linux PC.",
+        "tron.before_install",
+        "Vorher: Hersteller-Software 1.3.32 oder 1.3.33 auf der Tron (der Installer prüft das), Akku mindestens halb \
+         voll, etwa 42 GB frei im Sicherungsordner. Mit der Sicherung kommt das Hersteller-System jederzeit zurück. \
+         Bricht etwas ab, den Installer mit demselben Ordner neu starten.",
+        "Before you start: vendor software 1.3.32 or 1.3.33 on the Tron (the installer checks this), battery at least \
+         half full, about 42 GB free in the backup folder. The backup brings the vendor system back at any time. \
+         Should something break off, start the installer again with the same folder.",
+    ),
+    (
+        "tron.before_check",
+        "Vorher: Akku mindestens halb voll, etwa 25 GB frei im Sicherungsordner.",
+        "Before you start: battery at least half full, about 25 GB free in the backup folder.",
+    ),
+    (
+        "tron.before_back",
+        "Vorher: den Sicherungsordner dieser Tron wählen (der Installer prüft, ob er passt), Akku mindestens halb \
+         voll. Zurückschreiben ist bisher nur unter Linux erprobt.",
+        "Before you start: choose the backup folder of this Tron (the installer checks that it fits), battery at \
+         least half full. Writing back has been tried on Linux only so far.",
     ),
     (
         "tron.backup",

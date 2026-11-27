@@ -332,10 +332,10 @@ impl<'m, M: Mower> Driver<'m, M> {
             return Ok(Next::UsbDriver);
         }
         let (dev, identity) = self.mower.open(&found, ctx).await?;
-        if let Some(known) = &self.run.identity {
-            if known.serial_hash != identity.serial_hash || known.table != identity.table {
-                bail!("this is another mower than the one of this backup");
-            }
+        if let Some(known) = &self.run.identity
+            && (known.serial_hash != identity.serial_hash || known.table != identity.table)
+        {
+            bail!("this is another mower than the one of this backup");
         }
         if self.run.goal == Goal::Back && self.run.backup.is_none() {
             bail!("no backup of this mower in this folder");

@@ -4,6 +4,7 @@
 //! signed files, keeps the PC awake and does the network part of the first start. A module does everything that
 //! depends on the device. It gets no free file or network access: only what Ctx hands over.
 
+use crate::run::Goal;
 use crate::secret::Secret;
 use crate::store::Store;
 use anyhow::Result;
@@ -252,7 +253,7 @@ pub trait Mower {
     /// (key, de, en)
     fn texts(&self) -> &'static [(&'static str, &'static str, &'static str)];
     /// Code of the text the owner reads before anything happens: what the mower needs and the risks; empty for none.
-    fn before(&self) -> &'static str {
+    fn before(&self, _goal: Goal) -> &'static str {
         ""
     }
     fn space_needed(&self) -> Space;

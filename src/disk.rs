@@ -22,7 +22,7 @@ pub trait Disk {
 fn count(buf_len: usize) -> Result<u64> {
     let len = buf_len as u64;
     ensure!(
-        len > 0 && len % SECTOR == 0,
+        len > 0 && len.is_multiple_of(SECTOR),
         "{len} bytes are no whole number of sectors"
     );
     Ok(len / SECTOR)
@@ -169,10 +169,11 @@ impl Disk for FileDisk {
         self.call(first, sectors)?;
         self.file.read_exact(buf)?;
         for fault in &self.faults {
-            if let Fault::Flip(sector) = *fault {
-                if sector >= first && sector < first + sectors {
-                    buf[((sector - first) * SECTOR) as usize] ^= 0xff;
-                }
+            if let Fault::Flip(sector) = *fault
+                && sector >= first
+                && sector < first + sectors
+            {
+                buf[((sector - first) * SECTOR) as usize] ^= 0xff;
             }
         }
         Ok(())

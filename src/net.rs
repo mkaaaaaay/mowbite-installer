@@ -99,10 +99,10 @@ pub async fn call(addr: IpAddr, port: u16, method: &str, params: Value) -> Resul
                     sent = true;
                 }
                 Event::Incoming(Packet::Publish(p)) if p.topic == "rpc/response" => {
-                    if let Ok(answer) = serde_json::from_slice::<Value>(&p.payload) {
-                        if answer.get("id").and_then(Value::as_str) == Some(id.as_str()) {
-                            return Ok(answer);
-                        }
+                    if let Ok(answer) = serde_json::from_slice::<Value>(&p.payload)
+                        && answer.get("id").and_then(Value::as_str) == Some(id.as_str())
+                    {
+                        return Ok(answer);
                     }
                 }
                 _ => {}

@@ -8,10 +8,10 @@ use mowbite_installer::run::Goal;
 use mowbite_installer::secret::Secret;
 use mowbite_installer::sign::Signers;
 use mowbite_installer::text::{Bar, Owner, german, text_of, word};
-use mowbite_installer::tron::module::Tron;
+use mowbite_installer::tron::module::{Tron, before};
 use mowbite_installer::tron::port::UsbPort;
 use mowbite_installer::tron::{tables, texts::TEXTS};
-use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared};
+use mowbite_installer::web::{Input, Note, PageOwner, Server, Shared, goal_id};
 use mowbite_installer::{fetch, release};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -52,6 +52,11 @@ fn tron(
 
 async fn text_mode(list: &[String]) -> Result<bool> {
     let args = cli::parse(list)?;
+    anyhow::ensure!(
+        cli::store_fits(&args.store),
+        "{}",
+        word("frame.store_foreign")
+    );
     let signers = Signers::builtin();
     let (tron, tables) = tron(&args, &signers, &Bar::new(TEXTS))?;
     cli::run(&tron, &args, &signers, &tables).await
@@ -62,11 +67,7 @@ fn default_store() -> PathBuf {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map_or_else(PathBuf::new, PathBuf::from);
-    home.join(if german() {
-        "MowBite-Sicherung"
-    } else {
-        "MowBite-Backup"
-    })
+    home.join(cli::store_name())
 }
 
 fn open_browser(url: &str) {
@@ -96,6 +97,9 @@ fn start_args(params: &Value) -> Result<(Args, Option<Wifi>), &'static str> {
     let store = PathBuf::from(params["store"].as_str().unwrap_or_default().trim());
     if store.as_os_str().is_empty() {
         return Err("frame.store_missing");
+    }
+    if !cli::store_fits(&store) {
+        return Err("frame.store_foreign");
     }
     let wifi = match goal {
         Goal::Install => {
@@ -167,7 +171,10 @@ async fn page_mode() -> Result<bool> {
     shared.update(|v| {
         v.lang = if german() { "de" } else { "en" };
         v.view = "start";
-        v.before = Some(text_of(TEXTS, "tron.before").to_owned());
+        for goal in [Goal::Install, Goal::Check, Goal::Back] {
+            v.before
+                .insert(goal_id(goal), text_of(TEXTS, before(goal)).to_owned());
+        }
         v.store = default_store().display().to_string();
     });
     let url = server.url();

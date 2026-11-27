@@ -122,13 +122,13 @@ impl Store {
         let mut found = None;
         for line in BufReader::new(file).lines() {
             let line = line?;
-            if let Some((sum, file_name)) = line.split_once("  ") {
-                if file_name == name {
-                    if found.is_some() {
-                        bail!("{name} is listed twice in {SUMS}");
-                    }
-                    found = Some(sum.to_string());
+            if let Some((sum, file_name)) = line.split_once("  ")
+                && file_name == name
+            {
+                if found.is_some() {
+                    bail!("{name} is listed twice in {SUMS}");
                 }
+                found = Some(sum.to_string());
             }
         }
         Ok(found)

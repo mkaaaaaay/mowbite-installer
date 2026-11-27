@@ -18,10 +18,14 @@
 
     <section class="card" id="start" hidden>
       <h2 data-t="start_title"></h2>
-      <p class="note" id="before"></p>
       <div class="choices" role="radiogroup" id="goals"></div>
+      <p class="note" id="before" hidden></p>
       <label class="field"><span data-t="store"></span>
-        <input id="store" type="text" autocomplete="off" spellcheck="false">
+        <span class="row">
+          <input id="store" type="text" autocomplete="off" spellcheck="false">
+          <button class="button small" type="button" id="store_pick" data-t="store_pick"></button>
+        </span>
+        <span class="secondary" id="store_picking" data-t="store_picking" hidden></span>
         <span class="secondary" id="store_hint"></span>
       </label>
       <div id="wifi_form" hidden>

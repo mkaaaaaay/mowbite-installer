@@ -8,10 +8,12 @@ use crate::text::{Ask, Owner, back_question, word};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Requests are small: the start with the Wi-Fi is the largest.
@@ -123,6 +125,13 @@ pub struct SetupWifi {
     pub qr: String,
 }
 
+/// A folder picked in the dialog of the system; n counts the picks, so the page takes each once.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Picked {
+    pub n: u64,
+    pub path: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Line {
     pub at: String,
@@ -137,9 +146,15 @@ pub struct View {
     pub lang: &'static str,
     pub view: &'static str,
     pub goal: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub before: Option<Text>,
+    /// What the owner reads before a goal, by goal_id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub before: BTreeMap<&'static str, Text>,
     pub store: String,
+    /// The folder dialog of the system is open.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub picking: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picked: Option<Picked>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_error: Option<Note>,
     pub steps: Vec<StepState>,
@@ -180,6 +195,8 @@ pub struct Shared {
     view: Mutex<View>,
     inbox: Mutex<Inbox>,
     arrived: Condvar,
+    /// Opens the folder dialog in a thread of its own, so the page goes on polling meanwhile.
+    picker: OnceLock<SyncSender<PathBuf>>,
 }
 
 impl Shared {
@@ -268,6 +285,23 @@ impl Server {
             key: key.clone(),
             shared: shared.clone(),
         };
+        let (picker, picks) = sync_channel::<PathBuf>(1);
+        let _ = shared.picker.set(picker);
+        let picked = shared.clone();
+        std::thread::spawn(move || {
+            for from in picks {
+                let folder = pick_folder(&from);
+                picked.update(|v| {
+                    v.picking = false;
+                    if let Some(folder) = folder {
+                        v.picked = Some(Picked {
+                            n: v.picked.as_ref().map_or(1, |p| p.n + 1),
+                            path: crate::cli::store_in(&folder).display().to_string(),
+                        });
+                    }
+                });
+            }
+        });
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let _ = serve(stream, port, &key, &shared);
@@ -280,6 +314,16 @@ impl Server {
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}/{}/", self.port, self.key)
     }
+}
+
+/// The folder dialog of the system, opened at the nearest folder of from that exists. None when cancelled or when the
+/// system has no dialog (Linux without portal and zenity): the owner types the folder then.
+fn pick_folder(from: &Path) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title(word("frame.pick_store"));
+    if let Some(dir) = from.ancestors().find(|d| d.is_absolute() && d.is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_folder()
 }
 
 struct Request {
@@ -446,6 +490,24 @@ fn answer(request: &Request, port: u16, key: &str, shared: &Shared) -> Reply {
                         question,
                         answer: answer.to_owned(),
                     });
+                }
+                "pick_folder" => {
+                    let Some(picker) = shared.picker.get() else {
+                        return Reply::status("404 Not Found");
+                    };
+                    let from = PathBuf::from(body["from"].as_str().unwrap_or_default().trim());
+                    let mut open = false;
+                    shared.update(|v| {
+                        open = v.view == "start" && !v.picking;
+                        v.picking |= open;
+                    });
+                    if !open {
+                        return Reply::status("409 Conflict");
+                    }
+                    if picker.try_send(from).is_err() {
+                        shared.update(|v| v.picking = false);
+                        return Reply::status("409 Conflict");
+                    }
                 }
                 "setup_key" => {
                     let key = shared.inbox.lock().unwrap().setup_key.clone();
@@ -653,10 +715,10 @@ impl Owner for PageOwner {
 
     fn at(&self, step: Step) {
         let list = steps_of(self.goal);
-        if let Some(i) = list.iter().position(|s| *s == step) {
-            if i > self.reached.get() {
-                self.reached.set(i);
-            }
+        if let Some(i) = list.iter().position(|s| *s == step)
+            && i > self.reached.get()
+        {
+            self.reached.set(i);
         }
         self.at.set(Some(step));
         self.shared.update(|v| {
@@ -930,6 +992,39 @@ mod tests {
         );
         // Never in the state.
         assert!(!String::from_utf8(shared.state(0)).unwrap().contains("k3y"));
+    }
+
+    #[test]
+    fn the_folder_dialog_once_at_a_time_and_only_at_the_start() {
+        let shared = Shared::default();
+        let pick = request(
+            "POST",
+            &format!("/{KEY}/pick_folder"),
+            HOST,
+            Some(PAGE),
+            r#"{"from":" /home/x/MowBite "}"#,
+        );
+        // Without a server there is no dialog.
+        assert_eq!(status(&pick, &shared), "404 Not Found");
+        let (picker, picks) = sync_channel(1);
+        shared.picker.set(picker).unwrap();
+        shared.update(|v| v.view = "start");
+        assert_eq!(status(&pick, &shared), "200 OK");
+        assert_eq!(picks.try_recv().unwrap(), PathBuf::from("/home/x/MowBite"));
+        assert!(shared.view.lock().unwrap().picking);
+        assert_eq!(status(&pick, &shared), "409 Conflict");
+        assert!(picks.try_recv().is_err());
+        shared.update(|v| {
+            v.picking = false;
+            v.view = "run";
+        });
+        assert_eq!(status(&pick, &shared), "409 Conflict");
+        // Like every change, only from this page.
+        let mut other = pick;
+        other.origin = Some("http://evil.example".into());
+        shared.update(|v| v.view = "start");
+        assert_eq!(status(&other, &shared), "403 Forbidden");
+        assert!(picks.try_recv().is_err());
     }
 
     #[test]

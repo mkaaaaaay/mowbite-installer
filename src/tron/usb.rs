@@ -17,7 +17,7 @@ const LIMIT: Duration = Duration::from_secs(10);
 /// (first sector, byte range in the buffer) of each transfer for `len` bytes from `first` on.
 pub fn chunks(first: u64, len: usize) -> Result<Vec<(u32, std::ops::Range<usize>)>> {
     ensure!(
-        len > 0 && len as u64 % SECTOR == 0,
+        len > 0 && (len as u64).is_multiple_of(SECTOR),
         "{len} bytes are no whole number of sectors"
     );
     let sectors = len as u64 / SECTOR;

@@ -6,6 +6,7 @@ use super::port::Port;
 use super::{back, checks, contents, gpt, identity, image, pack, rootfs, tables, texts};
 use crate::disk::{Disk, SECTOR};
 use crate::mower::*;
+use crate::run::Goal;
 use anyhow::{Context, Result, anyhow, ensure};
 use std::fs::File;
 use std::path::PathBuf;
@@ -148,6 +149,15 @@ fn firmware(inputs: &Inputs) -> Result<checks::Firmware> {
     anyhow::bail!("{}: no {PLATFORM_YAML}", os.display())
 }
 
+/// Code of the text the owner reads before a goal.
+pub fn before(goal: Goal) -> &'static str {
+    match goal {
+        Goal::Install => "tron.before_install",
+        Goal::Check => "tron.before_check",
+        Goal::Back => "tron.before_back",
+    }
+}
+
 impl<P: Port> Mower for Tron<P> {
     type Device = TronDisk<P::Disk>;
 
@@ -170,8 +180,8 @@ impl<P: Port> Mower for Tron<P> {
         texts::TEXTS
     }
 
-    fn before(&self) -> &'static str {
-        "tron.before"
+    fn before(&self, goal: Goal) -> &'static str {
+        before(goal)
     }
 
     fn space_needed(&self) -> Space {

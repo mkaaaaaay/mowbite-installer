@@ -356,10 +356,11 @@ fn file(
     ensure!(plain(name), "{name:?} is no plain file name");
     let path = folder.join(name);
     kept.push(path.clone());
-    if let Some(want) = sha256 {
-        if path.is_file() && crate::store::sha256_file(&path)? == want {
-            return Ok(path);
-        }
+    if let Some(want) = sha256
+        && path.is_file()
+        && crate::store::sha256_file(&path)? == want
+    {
+        return Ok(path);
     }
     if max > MAX_SIDECAR {
         println!("Downloading {name}");
@@ -372,11 +373,11 @@ fn file(
     source.get(&format!("{release}/{name}"), max, &mut out, progress)?;
     out.file.sync_all()?;
     let got = crate::store::hex(&out.hash.finalize());
-    if let Some(want) = sha256 {
-        if got != want {
-            let _ = std::fs::remove_file(&part);
-            bail!("{name} does not have the sha256 index.json names");
-        }
+    if let Some(want) = sha256
+        && got != want
+    {
+        let _ = std::fs::remove_file(&part);
+        bail!("{name} does not have the sha256 index.json names");
     }
     std::fs::rename(&part, &path).with_context(|| path.display().to_string())?;
     Ok(path)

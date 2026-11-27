@@ -474,6 +474,18 @@ const FRAME: &[(&str, &str, &str)] = &[
         "Please give a backup folder.",
     ),
     (
+        "frame.store_foreign",
+        "In diesem Ordner liegen schon andere Dateien. Bitte einen neuen oder leeren Ordner angeben: der Installer \
+         macht den Sicherungsordner nur für dich lesbar.",
+        "This folder holds other files already. Please give a new or empty folder: the installer makes the backup \
+         folder readable for you only.",
+    ),
+    (
+        "frame.pick_store",
+        "Sicherungsordner wählen",
+        "Choose the backup folder",
+    ),
+    (
         "frame.wifi_missing",
         "Bitte den Namen deines WLANs angeben.",
         "Please give the name of your Wi-Fi.",
@@ -505,14 +517,14 @@ pub fn text_of<'a>(texts: &[(&str, &'a str, &'a str)], code: &'a str) -> &'a str
 fn explain(texts: &[(&str, &str, &str)], error: &anyhow::Error) -> String {
     let causes: Vec<String> = error.chain().map(ToString::to_string).collect();
     for (i, cause) in causes.iter().enumerate() {
-        if let Some((code, rest)) = cause.split_once(": ") {
-            if texts.iter().any(|(key, _, _)| *key == code) {
-                let rest = std::iter::once(rest)
-                    .chain(causes[i + 1..].iter().map(String::as_str))
-                    .collect::<Vec<_>>()
-                    .join(": ");
-                return format!("{} ({rest})", text_of(texts, code));
-            }
+        if let Some((code, rest)) = cause.split_once(": ")
+            && texts.iter().any(|(key, _, _)| *key == code)
+        {
+            let rest = std::iter::once(rest)
+                .chain(causes[i + 1..].iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(": ");
+            return format!("{} ({rest})", text_of(texts, code));
         }
     }
     causes.join(": ")

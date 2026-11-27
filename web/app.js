@@ -20,6 +20,9 @@ const T = {
   go_back: ["Sicherung zurückschreiben", "Write the backup back"],
   go_choose: ["Erst ein Ziel wählen", "Choose a goal first"],
   store: ["Sicherungsordner", "Backup folder"],
+  store_pick: ["Auswählen…", "Choose…"],
+  store_picking: ["Das Auswahlfenster ist offen, vielleicht hinter dem Browser.",
+    "The window to choose is open, maybe behind the browser."],
   store_hint: ["Hier liegen die Sicherung mit den Schlüsseln und dem WLAN der Tron: nicht weitergeben.",
     "The backup with the keys and Wi-Fi of the Tron goes here: keep it to yourself."],
   wifi_name: ["WLAN-Name", "Wi-Fi name"],
@@ -82,6 +85,7 @@ const gb = (bytes) => (bytes / 1e9).toLocaleString(LANG, { minimumFractionDigits
 let state = null;
 let goal = null;
 let logFrom = 0;
+let pickedSeen = 0;
 let sending = false;
 
 function el(tag, attrs, children) {
@@ -105,8 +109,9 @@ function withCode(text, code) {
 function renderStart(s) {
   $("start").hidden = s.view !== "start";
   if (s.view !== "start") return;
-  $("before").textContent = pick(s.before);
-  $("before").hidden = !s.before;
+  const before = goal && s.before?.[goal];
+  $("before").textContent = pick(before);
+  $("before").hidden = !before;
   const goals = $("goals");
   if (!goals.childElementCount) {
     for (const id of ["install", "check", "back"]) {
@@ -121,6 +126,12 @@ function renderStart(s) {
     }
   }
   if (!$("store").value && s.store) $("store").value = s.store;
+  if (s.picked && s.picked.n !== pickedSeen) {
+    pickedSeen = s.picked.n;
+    $("store").value = s.picked.path;
+  }
+  $("store_pick").disabled = !!s.picking || sending;
+  $("store_picking").hidden = !s.picking;
   $("store_hint").textContent = t("store_hint");
   $("wifi_form").hidden = goal !== "install";
   $("start_error").hidden = !s.start_error;
@@ -251,6 +262,8 @@ $("setup_key_show").addEventListener("click", async () => {
   }
   $("setup_key_show").textContent = t($("setup_key_show").dataset.t);
 });
+
+$("store_pick").addEventListener("click", () => send("pick_folder", { from: $("store").value.trim() }));
 
 $("go").addEventListener("click", () => {
   const params = { goal, store: $("store").value.trim() };
